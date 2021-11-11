@@ -1,0 +1,24 @@
+#lang ivy1.8
+
+# Holds fundamental type definitions that don't make sense
+# to reside anywhere else just yet.
+
+include collections
+
+# XXX: For the moment, tuples' elements are all of some arbitrary type.  This
+# simplifies the type astronautics at the expense of flexibility, but maybe
+# this is OK.  We could always splat out t to be a sum type of fixed types, but
+# Ken mentioned that it's nice to have incredibly small domains for testing so
+# as to maxmimise collisions; so, testing with t=bv[2] or something is probably
+# a better idea anyway, perhaps?
+type t
+instance idx_t : unbounded_sequence
+
+# A tuple type is the data structure laid out in tablets in storage nodes.
+# These are returned to clients on lookup operations.
+instance tuple : array(idx_t, t)
+
+# A tuple template is used to specify a query where not every value is filled
+# out: a wildcard is encoded by an empty option and "materialised" into
+# concrete values on lookups.
+instance tuple_template : array(idx_t, option[t])

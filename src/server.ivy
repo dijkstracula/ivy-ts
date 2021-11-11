@@ -1,0 +1,32 @@
+#lang ivy1.8
+
+# A tuplespace node lives on the hash ring.  It can consume API actions from
+# the client or from other nodes.
+
+include order
+include collections
+
+include ts_types
+
+global {
+    instance node : iterable
+}
+
+process server(self: node) = {
+    export action insert(tpl: tuple)
+    export action remove(tpl: tuple_template)
+    export action read(tpl: tuple_template)
+
+    implementation {
+
+        implement insert {
+        }
+
+        implement remove {
+        }
+
+        implement read {
+        }
+    }
+}
+
