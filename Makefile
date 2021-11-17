@@ -1,8 +1,8 @@
-SRC=src/
+SRCDIR=src/
+SRCS=server.ivy ts_types.ivy
 
 CC=ivyc
 CFLAGS=target=test
-TOPFILE=server.ivy
 
 LCH=ivy_launch
 LCHFLAGS=node.max=1
@@ -11,18 +11,20 @@ EXE=server
 CHK=ivy_check
 CHKFLAGS=isolate=this
 
-.PHONY: all clean test bmc
+.PHONY: all build clean test bmc
 
-all: $(SRC)$(EXE) test bmc
+all: build test bmc
 
-$(SRC)$(EXE): $(SRC)$(TOPFILE)
-	cd $(SRC); $(CC) $(CFLAGS) $(TOPFILE)
+build: $(SRCDIR)$(EXE)
 
-test: $(SRC)$(EXE)
-	cd $(SRC); $(LCH) $(LCHFLAGS) $(EXE)
+$(SRCDIR)$(EXE): $(addprefix $(SRCDIR), $(SRCS))
+	cd $(SRCDIR); $(CC) $(CFLAGS) $(notdir $<)
 
-bmc: $(SRC)$(TOPFILE)
-	cd $(SRC); $(CHK) $(CHKFLAGS) $(TOPFILE)
+test: $(SRCDIR)$(EXE)
+	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE)
+
+bmc: $(SRCDIR)$(TOPFILE)
+	cd $(SRCDIR); $(CHK) $(CHKFLAGS) $(TOPFILE)
 
 clean:
 	./ivy_clean.sh

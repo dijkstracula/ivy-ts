@@ -5,12 +5,6 @@
 
 include collections
 
-# XXX: For the moment, tuples' elements are all of some arbitrary type.  This
-# simplifies the type astronautics at the expense of flexibility, but maybe
-# this is OK.  We could always splat out t to be a sum type of fixed types, but
-# Ken mentioned that it's nice to have incredibly small domains for testing so
-# as to maxmimise collisions; so, testing with t=bv[2] or something is probably
-# a better idea anyway, perhaps?
 type t
 instance idx_t : unbounded_sequence
 
@@ -22,3 +16,5 @@ instance tuple : array(idx_t, t)
 # out: a wildcard is encoded by an empty option and "materialised" into
 # concrete values on lookups.
 instance tuple_template : array(idx_t, option[t])
+
+interpret t -> bv[3]
