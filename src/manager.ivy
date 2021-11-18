@@ -1,0 +1,64 @@
+
+#include paxos figure out how to do this
+include ts_types
+
+
+# Messages:
+# server-read-req
+# server-read-rsp
+# server-rm-req
+# server-rm-req
+# server-add-req
+# server-add-rsp
+# new_topology
+
+
+process manager(self: id) = {
+
+    export action is_down # keeping track of all servers
+    
+    specification {
+	#	instance p_man : instanceof(paxos)
+	instance deletes : unbounded_queue(delete_reqs)
+	after init {
+
+	}
+
+	before delete {
+	    
+	}
+
+	after delete {
+	    # something from inserted is now in deleted
+	}
+    }
+    
+    implementation {
+
+	
+	deletes : unbounded_queue(delete_req)
+	# current_view
+	# 
+	
+	after init {
+	    
+	}
+	implement delete {
+	    # enqueue current delete req
+	    if ~deletes.empty {
+		# dequeue delete_req
+		# read ret_tuple from delete_req.tuple (tuple on queue may contain wildcards)
+		# get all servers for the ret_tuple
+		# notify servers to delete ret_tuple
+		# send client ret_tuple
+	    }
+	}
+
+	implement is_down {
+	    # 
+	}
+    }
+
+    
+}
+
