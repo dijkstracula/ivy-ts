@@ -15,18 +15,67 @@ global {
 process server(self: node) = {
     export action insert(tpl: tuple)
     export action remove(tpl: tuple_template)
-    export action read(tpl: tuple_template)
+    export action read(tpl: tuple_template) returns (ret: option[tuple])
 
     implementation {
-
         implement insert {
+            insert_commit(self, tpl);
         }
 
         implement remove {
         }
 
         implement read {
+
         }
+    }
+
+    #TODO: global instead?
+    common {
+        specification {
+
+            action insert_commit(self: node, t: tuple)
+            action remove_commit(self: node, t: tuple)
+
+            relation insert_inflight(N:node, T:tuple)
+            relation insert_committed(N:node, T:tuple)
+            relation remove_committed(N:node, T:tuple)
+
+            after init {
+                insert_committed(N,T) := false;
+            }
+
+            before insert(self: node, tpl: tuple) {
+                insert_inflight(self, tpl) := true;
+            }
+
+            after read(self: node, tpl: tuple_template) returns (ret: option[tuple]) {
+                # If we return anything, somebody must have committed it.
+                if ~ret.is_empty {
+                    require(insert_committed(N, ret.contents));
+                }
+            }
+
+            before insert_commit {
+                # TODO: is this just `after insert`? 
+                # TODO: we want to require that all the right nodes have stored
+                # the tuple (???)
+
+                require insert_inflight(self, t);
+                insert_inflight(self, t) := false;
+                insert_committed(self, t) := true;
+            }
+
+            before remove_commit {
+                # We want to make sure that no nodes have the tuple anymore,
+                # I think.
+
+                require insert_committed(self, t);
+                insert_committed(self, t) := false;
+                remove_committed(self, t) := true;
+            }
+        }
+
     }
 }
 
