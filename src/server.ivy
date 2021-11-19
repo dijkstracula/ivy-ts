@@ -10,9 +10,142 @@ include ts_types
 
 global {
     instance node : iterable
+
+    # All server messages are internal to the tuplespace implementation;
+    # clients do not directly send these messages but simply "call into" the
+    # tuplespace with exported actions.
+
+    # TODO: It would be nice to be able to namespace these messages under
+    # `server` to imply a certain information hiding, but I get errors about
+    # dependency cycles...
+    class server_msg_t = {
+        # The operation to take when a node receives a particular message.
+        action handle(self: node, ^msg:server_msg_t)
+
+        # If the message is part of a larger protocol (such as a req/resp
+        # pair), produce the message that should be returned to the sending
+        # node.  Produces an empty return value if no such message need be
+        # sent.  (The caller may still need to fill in certain fields.)
+        # TODO: is this actually useful?  I'm not so sure anymore.
+        #action next(self: node, ^msg:server_msg_t) returns (ret: option[server_msg_t])
+
+        # Encodes the per-message policy to unicast, multicast, or broadcast a
+        # given message type to its recipients.
+        action send(self: node, ^msg: server_msg_t)
+    }
+
+
+    # A load request is an internal operation sent from one node to another to
+    # materialise a templated (i.e. potentially wildcarded) tuple.
+
+    subclass server_load_req of server_msg_t = {
+        field src : node
+        field tpl_tmp : tuple_template
+
+        action handle(self: node, ^msg:server_msg_t) = {
+            debug "server_load_req" with self=self, msg=msg;
+        }
+
+        action send(self: node, ^msg: server_msg_t) = {
+            # TODO:
+            # 1) Begin with a set of all nodes in the system.
+            # 2) For each concrete component of the tuple, hash that component,
+            # look up which node(s) are responsible for that hash, and intersect
+            # with the node set.
+            # 3) When we know which nodes store a tuple that matches the template,
+            # I think, choose an arbitrary one and unicast to it.
+        }
+    }
+    subclass server_load_resp of server_msg_t = {
+        field dst : node
+        field tpl : option[tuple] # on not-found, None is returned.
+
+        action handle(self: node, ^msg:server_msg_t) = {
+            debug "server_load_resp" with self=self, msg=msg;
+        }
+
+        action send(self: node, ^msg: server_msg_t) = {
+            # TODO: This one is simple; after we've looked the tuple up in our
+            # local store, send back to the requesting node.
+        }
+    }
+
+    # A store is an internal operation structurally similar to a read - it mutates
+    # the tuplespace by adding a tuple to the tuplespace.
+
+    subclass server_store_req of server_msg_t = {
+        field src : node
+        field tpl : tuple
+
+        action handle(self: node, ^msg:server_msg_t) = {
+            debug "server_store_req" with self=self, msg=msg;
+        }
+
+        action send(self: node, ^msg: server_msg_t) = {
+            # TODO:
+            # 1) Begin with a set of all nodes in the system.
+            # 2) Hash all components of the tuple, look up which nodes in the
+            # system are responsible for storing that hash, and intersect with
+            # the running tally.
+            # 3) When we know which nodes store the given tuple, multicast to them.
+        }
+    }
+
+    subclass server_store_resp of server_msg_t = {
+        field idem : bool # Was this an idempotent write (ie. did this tuple already exist?)
+        field dst : node
+
+        action handle(self: node, ^msg:server_msg_t) = {
+            debug "server_store_resp" with self=self, msg=msg;
+        }
+
+        action send(self: node, ^msg: server_msg_t) = {
+            # TODO: This one is simple; after we've looked the tuple up in our
+            # local store and modified it, unicast the old value to the requesting
+            # node.
+        }
+    }
+
+    # A delete is an internal operation structurally similar to a store - it mutates
+    # the tuplespace by removing a tuple from the tuplespace.
+
+    subclass server_delete_req of server_msg_t = {
+        field src : node
+        field tpl : tuple
+
+        action handle(self: node, ^msg:server_msg_t) = {
+            debug "server_delete_req" with self=self, msg=msg;
+        }
+
+        action send(self: node, ^msg: server_msg_t) = {
+            # TODO:
+            # 1) Begin with a set of all nodes in the system.
+            # 2) Hash all components of the tuple, look up which nodes in the
+            # system are responsible for storing that hash, and intersect with
+            # the running tally.
+            # 3) When we know which nodes store the given tuple, multicast to them.
+        }
+    }
+
+    subclass server_delete_resp of server_msg_t = {
+        field idem : bool # Was this an idempotent delete (ie. did this tuple not exist?)
+        field dst : node
+
+        action handle(self: node, ^msg:server_msg_t) = {
+            debug "server_delete_resp" with self=self, msg=msg;
+        }
+
+        action send(self: node, ^msg: server_msg_t) = {
+            # TODO: This one is simple; after we've looked the tuple up in our
+            # local store and modified it, unicast the old value to the requesting
+            # node.
+        }
+    }
+
 }
 
 process server(self: node) = {
+
     export action insert(tpl: tuple)
     export action remove(tpl: tuple_template)
     export action read(tpl: tuple_template) returns (ret: option[tuple])
@@ -57,7 +190,7 @@ process server(self: node) = {
             }
 
             before insert_commit {
-                # TODO: is this just `after insert`? 
+                # TODO: is this just `after insert`?
                 # TODO: we want to require that all the right nodes have stored
                 # the tuple (???)
 

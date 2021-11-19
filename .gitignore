@@ -1,3 +1,4 @@
+src/server
 src/*.cpp
 src/*.h
 src/*.dsc
