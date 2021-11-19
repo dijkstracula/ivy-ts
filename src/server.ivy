@@ -35,43 +35,8 @@ global {
     }
 
 
-    # A load request is an internal operation sent from one node to another to
-    # materialise a templated (i.e. potentially wildcarded) tuple.
-
-    subclass server_load_req of server_msg_t = {
-        field src : node
-        field tpl_tmp : tuple_template
-
-        action handle(self: node, ^msg:server_msg_t) = {
-            debug "server_load_req" with self=self, msg=msg;
-        }
-
-        action send(self: node, ^msg: server_msg_t) = {
-            # TODO:
-            # 1) Begin with a set of all nodes in the system.
-            # 2) For each concrete component of the tuple, hash that component,
-            # look up which node(s) are responsible for that hash, and intersect
-            # with the node set.
-            # 3) When we know which nodes store a tuple that matches the template,
-            # I think, choose an arbitrary one and unicast to it.
-        }
-    }
-    subclass server_load_resp of server_msg_t = {
-        field dst : node
-        field tpl : option[tuple] # on not-found, None is returned.
-
-        action handle(self: node, ^msg:server_msg_t) = {
-            debug "server_load_resp" with self=self, msg=msg;
-        }
-
-        action send(self: node, ^msg: server_msg_t) = {
-            # TODO: This one is simple; after we've looked the tuple up in our
-            # local store, send back to the requesting node.
-        }
-    }
-
-    # A store is an internal operation structurally similar to a read - it mutates
-    # the tuplespace by adding a tuple to the tuplespace.
+    # A store is an internal operation mutates the tuplespace by adding a tuple
+    # to all nodes in the tuplespace.
 
     subclass server_store_req of server_msg_t = {
         field src : node
@@ -83,11 +48,7 @@ global {
 
         action send(self: node, ^msg: server_msg_t) = {
             # TODO:
-            # 1) Begin with a set of all nodes in the system.
-            # 2) Hash all components of the tuple, look up which nodes in the
-            # system are responsible for storing that hash, and intersect with
-            # the running tally.
-            # 3) When we know which nodes store the given tuple, multicast to them.
+            # Broadcast the store to all nodes.
         }
     }
 
@@ -101,8 +62,8 @@ global {
 
         action send(self: node, ^msg: server_msg_t) = {
             # TODO: This one is simple; after we've looked the tuple up in our
-            # local store and modified it, unicast the old value to the requesting
-            # node.
+            # local store and modified it, unicast the response to the
+            # requesting node.
         }
     }
 
@@ -119,11 +80,7 @@ global {
 
         action send(self: node, ^msg: server_msg_t) = {
             # TODO:
-            # 1) Begin with a set of all nodes in the system.
-            # 2) Hash all components of the tuple, look up which nodes in the
-            # system are responsible for storing that hash, and intersect with
-            # the running tally.
-            # 3) When we know which nodes store the given tuple, multicast to them.
+            # Broadcast to all nodes in the system.
         }
     }
 
@@ -137,8 +94,8 @@ global {
 
         action send(self: node, ^msg: server_msg_t) = {
             # TODO: This one is simple; after we've looked the tuple up in our
-            # local store and modified it, unicast the old value to the requesting
-            # node.
+            # local store and modified it, unicast the response to the
+            # requesting node.
         }
     }
 
