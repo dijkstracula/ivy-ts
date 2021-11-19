@@ -6,15 +6,14 @@
 include collections
 
 type t
-instance idx_t : unbounded_sequence
 
 # A tuple type is the data structure laid out in tablets in storage nodes.
 # These are returned to clients on lookup operations.
-instance tuple : array(idx_t, t)
+instance tuple : vector(t)
 
 # A tuple template is used to specify a query where not every value is filled
 # out: a wildcard is encoded by an empty option and "materialised" into
 # concrete values on lookups.
-instance tuple_template : array(idx_t, option[t])
+instance tuple_template : vector(option[t])
 
 interpret t -> bv[3]
