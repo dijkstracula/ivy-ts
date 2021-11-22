@@ -3,13 +3,15 @@
 # A tuplespace node lives on the hash ring.  It can consume API actions from
 # the client or from other nodes.
 
-include order
 include collections
+include order
+include network
 
 include ts_types
 
 global {
     instance node : iterable
+
 
     # All server messages are internal to the tuplespace implementation;
     # clients do not directly send these messages but simply "call into" the
@@ -42,16 +44,16 @@ global {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg:tuple_msg_t)
-        action send(self: node, ^msg: tuple_msg_t)
+        action handle(self: node, ^msg: tuple_store_req)
+        action send(self: node, ^msg: tuple_store_req)
     }
 
     subclass tuple_store_resp of tuple_msg_t = {
         field idem : bool # Was this an idempotent write (ie. did this tuple already exist?)
         field dst : node
 
-        action handle(self: node, ^msg: tuple_msg_t)
-        action send(self: node, ^msg: tuple_msg_t)
+        action handle(self: node, ^msg: tuple_store_resp)
+        action send(self: node, ^msg: tuple_store_resp)
     }
 
     # A mark indicates that a remote server wishes to atomically remove a value
@@ -61,16 +63,16 @@ global {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg:tuple_msg_t)
-        action send(self: node, ^msg: tuple_msg_t)
+        action handle(self: node, ^msg: tuple_mark_req)
+        action send(self: node, ^msg: tuple_mark_req)
     }
 
     subclass tuple_mark_resp of tuple_msg_t = {
         field ok : bool # Did we mark this successfully?
         field dst : node
 
-        action handle(self: node, ^msg:tuple_msg_t)
-        action send(self: node, ^msg: tuple_msg_t)
+        action handle(self: node, ^msg: tuple_mark_resp)
+        action send(self: node, ^msg: tuple_mark_resp)
     }
 
 
@@ -81,150 +83,202 @@ global {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg:tuple_msg_t)
-        action send(self: node, ^msg: tuple_msg_t)
+        action handle(self: node, ^msg: tuple_delete_req)
+        action send(self: node, ^msg: tuple_delete_req)
     }
 
     subclass tuple_delete_resp of tuple_msg_t = {
         field idem : bool # Was this an idempotent delete (ie. did this tuple not exist?)
         field dst : node
 
-        action handle(self: node, ^msg:tuple_msg_t)
-        action send(self: node, ^msg: tuple_msg_t)
+        action handle(self: node, ^msg: tuple_delete_resp)
+        action send(self: node, ^msg: tuple_delete_resp)
     }
 
+    instance tuple_net : tcp.net(tuple_msg_t)
 }
+
+
+###############################################################################
+
 
 process server(self: node) = {
 
     export action insert(tpl: tuple)
-    export action remove(tpl: tuple_template)
+    export action remove(tpl: tuple_template) returns (ret: option[tuple])
     export action read(tpl: tuple_template) returns (ret: option[tuple])
 
     implementation {
+
+        instance sock : tuple_net.socket
+
         implement insert {
-            insert_commit(self, tpl);
+            var msg: tuple_store_req;
+            msg.src := self;
+            msg.tpl := tpl;
+            msg.send(self);
+
+            #store_committed(tpl);
         }
 
         implement remove {
+            var materialised : option[tuple];
+            materialised := read(tpl);
+
+            if materialised.is_empty {
+                # If there's nothing we can extract that matches the template,
+                # then NACK back to the client.
+                ret := option[tuple].empty;
+            } else {
+                ret := materialised;
+            }
         }
 
         implement read {
-
+            ret := option[tuple].empty;
         }
+
+        #######################################################################
+
+        # Network helpers (c/o Ken's HW6 starter)
+
+        implement sock.recv(src:tcp.endpoint, msg:tuple_msg_t) {
+            debug "recv" with server = self, msg = msg;
+            msg.handle(self);
+        }
+
+        action unicast(outgoing : tuple_msg_t, dst_id : node) = {
+            debug "send" with server=self, msg=outgoing, dst=dst_id;
+            sock.send(server(dst_id).sock.id,outgoing);
+        }
+
+        action broadcast(outgoing : tuple_msg_t) = {
+            for it,dst_id in node.iter {
+                unicast(outgoing, dst_id);
+            }
+        }
+
+        #######################################################################
 
         # Tuple writing
 
         implement tuple_store_req.handle {
-            debug "tuple_store_req.handle" with self=self, msg=msg
+            debug "tuple_store_req.handle" with self=self, msg=msg;
             # TODO: 1) Perform the local write.
-            # TODO: 2) Reply with a `tuple_store_resp`.
+            # 2) Reply with a `tuple_store_resp`.
+            var resp: tuple_store_resp;
+            resp.idem := false; # TODO
+            resp.dst := msg.src;
+            resp.send(self)
         }
         implement tuple_store_req.send {
-            debug "tuple_store_req.send" with self=self, msg=msg
-            # TODO: broadcast the store to all nodes.
+            debug "tuple_store_req.send" with self=self, msg=msg;
+            broadcast(msg);
         }
 
         implement tuple_store_resp.handle {
-            debug "tuple_store_resp.handle" with self=self, msg=msg
+            debug "tuple_store_resp.handle" with self=self, msg=msg;
             # TODO: Have we received a resp from all nodes?
             # If so, commit.
         }
         implement tuple_store_resp.send {
-            debug "tuple_store_req.send" with self=self, msg=msg
+            debug "tuple_store_req.send" with self=self, msg=msg;
             # TODO: Unicast the response back to the original sender
         }
 
         # Tuple marking
 
         implement tuple_mark_req.handle {
-            debug "tuple_mark_req.handle" with self=self, msg=msg
+            debug "tuple_mark_req.handle" with self=self, msg=msg;
             # TODO: 1) Perform the local write.
-            # TODO: 2) Reply with a `tuple_mark_resp`.
+
+            # 2) Reply with a `tuple_mark_resp`.
+            var resp: tuple_mark_resp;
+            resp.ok := false; # TODO
+            resp.dst := msg.src;
+            resp.send(self)
         }
         implement tuple_mark_req.send {
-            debug "tuple_mark_req.send" with self=self, msg=msg
-            # TODO: broadcast the store to all nodes.
+            debug "tuple_mark_req.send" with self=self, msg=msg;
+            broadcast(msg);
         }
+
         implement tuple_mark_resp.handle {
-            debug "tuple_mark_resp.handle" with self=self, msg=msg
+            debug "tuple_mark_resp.handle" with self=self, msg=msg;
             # TODO: Have we received a resp from all nodes?
             # If so, commit.
         }
         implement tuple_mark_resp.send {
-            debug "tuple_mark_req.send" with self=self, msg=msg
-            # TODO: Unicast the response back to the original sender
+            debug "tuple_mark_req.send" with self=self, msg=msg;
+            # Unicast the response back to the original sender
+            unicast(msg, msg.dst)
         }
        
         # Tuple deletion
 
         implement tuple_delete_req.handle {
-            debug "tuple_delete_req.handle" with self=self, msg=msg
+            debug "tuple_delete_req.handle" with self=self, msg=msg;
             # TODO: 1) Perform the local write.
-            # TODO: 2) Reply with a `tuple_delete_resp`.
+
+            # 2) Reply with a `tuple_delete_resp`.
+            var resp: tuple_delete_resp;
+            resp.idem := false; # TODO
+            resp.dst := msg.src;
+            resp.send(self)
         }
         implement tuple_delete_req.send {
-            debug "tuple_delete_req.send" with self=self, msg=msg
-            # TODO: broadcast the store to all nodes.
+            debug "tuple_delete_req.send" with self=self, msg=msg;
+            broadcast(msg);
         }
 
         implement tuple_delete_resp.handle {
-            debug "tuple_delete_resp.handle" with self=self, msg=msg
+            debug "tuple_delete_resp.handle" with self=self, msg=msg;
             # TODO: Have we received a resp from all nodes?
             # If so, commit.
         }
         implement tuple_delete_resp.send {
-            debug "tuple_delete_req.send" with self=self, msg=msg
-            # TODO: Unicast the response back to the original sender
+            debug "tuple_delete_req.send" with self=self, msg=msg;
+            # Unicast the response back to the original sender
+            unicast(msg, msg.dst)
         }
     }
 
-    #TODO: global instead?
+    ###########################################################################
+
     common {
         specification {
 
-            action insert_commit(self: node, t: tuple)
-            action remove_commit(self: node, t: tuple)
+            # When this is called, we should consider the tuple committed.
+            action store_committed(t: tuple)
 
-            relation insert_inflight(N:node, T:tuple)
-            relation insert_committed(N:node, T:tuple)
-            relation remove_committed(N:node, T:tuple)
+            # When this is called, we should consider the tuple extracted.
+            action remove_committed(t: tuple)
+
+            # Is the given tuple 
+            relation stored(N: node, T: tuple)
 
             after init {
-                insert_committed(N,T) := false;
-            }
-
-            before insert(self: node, tpl: tuple) {
-                insert_inflight(self, tpl) := true;
+                stored(N,T) := false;
             }
 
             after read(self: node, tpl: tuple_template) returns (ret: option[tuple]) {
-                # If we return anything, somebody must have committed it.
+                # TODO: I think this is wrong: how does this behave with
+                # concurrent removes?
                 if ~ret.is_empty {
-                    require(insert_committed(N, ret.contents));
+                    # If we return anything, it must be present in the tuplespace.
+                    require(stored(N, ret.contents));
                 }
             }
 
-            before insert_commit {
-                # TODO: is this just `after insert`?
-                # TODO: we want to require that all the right nodes have stored
-                # the tuple (???)
-
-                require insert_inflight(self, t);
-                insert_inflight(self, t) := false;
-                insert_committed(self, t) := true;
-            }
-
-            before remove_commit {
-                # We want to make sure that no nodes have the tuple anymore,
-                # I think.
-
-                require insert_committed(self, t);
-                insert_committed(self, t) := false;
-                remove_committed(self, t) := true;
+            after remove(self: node, tpl: tuple_template) returns (ret: option[tuple]) {
+                # TODO: I think this is wrong: how does this behave with
+                # concurrent inserts?
+                if ~ret.is_empty {
+                    # If we return anything, it must have been extracted from the tuplespace.
+                    require(~stored(N, ret.contents));
+                }
             }
         }
-
     }
 }
 
