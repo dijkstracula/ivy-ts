@@ -18,85 +18,79 @@ global {
     # TODO: It would be nice to be able to namespace these messages under
     # `server` to imply a certain information hiding, but I get errors about
     # dependency cycles...
-    class server_msg_t = {
+    class tuple_msg_t = {
         # The operation to take when a node receives a particular message.
-        action handle(self: node, ^msg:server_msg_t)
+        action handle(self: node, ^msg:tuple_msg_t)
 
         # If the message is part of a larger protocol (such as a req/resp
         # pair), produce the message that should be returned to the sending
         # node.  Produces an empty return value if no such message need be
         # sent.  (The caller may still need to fill in certain fields.)
         # TODO: is this actually useful?  I'm not so sure anymore.
-        #action next(self: node, ^msg:server_msg_t) returns (ret: option[server_msg_t])
+        #action next(self: node, ^msg:tuple_msg_t) returns (ret: option[tuple_msg_t])
 
         # Encodes the per-message policy to unicast, multicast, or broadcast a
         # given message type to its recipients.
-        action send(self: node, ^msg: server_msg_t)
+        action send(self: node, ^msg: tuple_msg_t)
     }
 
 
     # A store is an internal operation mutates the tuplespace by adding a tuple
-    # to all nodes in the tuplespace.
+    # to all nodes in the tuplespace.  For details, see doc/operations.md .
 
-    subclass server_store_req of server_msg_t = {
+    subclass tuple_store_req of tuple_msg_t = {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg:server_msg_t) = {
-            debug "server_store_req" with self=self, msg=msg;
-        }
-
-        action send(self: node, ^msg: server_msg_t) = {
-            # TODO:
-            # Broadcast the store to all nodes.
-        }
+        action handle(self: node, ^msg:tuple_msg_t)
+        action send(self: node, ^msg: tuple_msg_t)
     }
 
-    subclass server_store_resp of server_msg_t = {
+    subclass tuple_store_resp of tuple_msg_t = {
         field idem : bool # Was this an idempotent write (ie. did this tuple already exist?)
         field dst : node
 
-        action handle(self: node, ^msg:server_msg_t) = {
-            debug "server_store_resp" with self=self, msg=msg;
-        }
-
-        action send(self: node, ^msg: server_msg_t) = {
-            # TODO: This one is simple; after we've looked the tuple up in our
-            # local store and modified it, unicast the response to the
-            # requesting node.
-        }
+        action handle(self: node, ^msg: tuple_msg_t)
+        action send(self: node, ^msg: tuple_msg_t)
     }
 
-    # A delete is an internal operation structurally similar to a store - it mutates
-    # the tuplespace by removing a tuple from the tuplespace.
+    # A mark indicates that a remote server wishes to atomically remove a value
+    # from the tuplestore.
 
-    subclass server_delete_req of server_msg_t = {
+    subclass tuple_mark_req of tuple_msg_t = {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg:server_msg_t) = {
-            debug "server_delete_req" with self=self, msg=msg;
-        }
-
-        action send(self: node, ^msg: server_msg_t) = {
-            # TODO:
-            # Broadcast to all nodes in the system.
-        }
+        action handle(self: node, ^msg:tuple_msg_t)
+        action send(self: node, ^msg: tuple_msg_t)
     }
 
-    subclass server_delete_resp of server_msg_t = {
+    subclass tuple_mark_resp of tuple_msg_t = {
+        field ok : bool # Did we mark this successfully?
+        field dst : node
+
+        action handle(self: node, ^msg:tuple_msg_t)
+        action send(self: node, ^msg: tuple_msg_t)
+    }
+
+
+    # A delete is an internal operation structurally similar to a store - it mutates
+    # the tuplespace by removing a marked tuple from the tuplespace.
+
+    subclass tuple_delete_req of tuple_msg_t = {
+        field src : node
+        field tpl : tuple
+
+        action handle(self: node, ^msg:tuple_msg_t)
+        action send(self: node, ^msg: tuple_msg_t)
+    }
+
+    subclass tuple_delete_resp of tuple_msg_t = {
         field idem : bool # Was this an idempotent delete (ie. did this tuple not exist?)
         field dst : node
 
-        action handle(self: node, ^msg:server_msg_t) = {
-            debug "server_delete_resp" with self=self, msg=msg;
-        }
-
-        action send(self: node, ^msg: server_msg_t) = {
-            # TODO: This one is simple; after we've looked the tuple up in our
-            # local store and modified it, unicast the response to the
-            # requesting node.
-        }
+        action handle(self: node, ^msg:tuple_msg_t)
+        action send(self: node, ^msg: tuple_msg_t)
     }
 
 }
@@ -117,6 +111,71 @@ process server(self: node) = {
 
         implement read {
 
+        }
+
+        # Tuple writing
+
+        implement tuple_store_req.handle {
+            debug "tuple_store_req.handle" with self=self, msg=msg
+            # TODO: 1) Perform the local write.
+            # TODO: 2) Reply with a `tuple_store_resp`.
+        }
+        implement tuple_store_req.send {
+            debug "tuple_store_req.send" with self=self, msg=msg
+            # TODO: broadcast the store to all nodes.
+        }
+
+        implement tuple_store_resp.handle {
+            debug "tuple_store_resp.handle" with self=self, msg=msg
+            # TODO: Have we received a resp from all nodes?
+            # If so, commit.
+        }
+        implement tuple_store_resp.send {
+            debug "tuple_store_req.send" with self=self, msg=msg
+            # TODO: Unicast the response back to the original sender
+        }
+
+        # Tuple marking
+
+        implement tuple_mark_req.handle {
+            debug "tuple_mark_req.handle" with self=self, msg=msg
+            # TODO: 1) Perform the local write.
+            # TODO: 2) Reply with a `tuple_mark_resp`.
+        }
+        implement tuple_mark_req.send {
+            debug "tuple_mark_req.send" with self=self, msg=msg
+            # TODO: broadcast the store to all nodes.
+        }
+        implement tuple_mark_resp.handle {
+            debug "tuple_mark_resp.handle" with self=self, msg=msg
+            # TODO: Have we received a resp from all nodes?
+            # If so, commit.
+        }
+        implement tuple_mark_resp.send {
+            debug "tuple_mark_req.send" with self=self, msg=msg
+            # TODO: Unicast the response back to the original sender
+        }
+       
+        # Tuple deletion
+
+        implement tuple_delete_req.handle {
+            debug "tuple_delete_req.handle" with self=self, msg=msg
+            # TODO: 1) Perform the local write.
+            # TODO: 2) Reply with a `tuple_delete_resp`.
+        }
+        implement tuple_delete_req.send {
+            debug "tuple_delete_req.send" with self=self, msg=msg
+            # TODO: broadcast the store to all nodes.
+        }
+
+        implement tuple_delete_resp.handle {
+            debug "tuple_delete_resp.handle" with self=self, msg=msg
+            # TODO: Have we received a resp from all nodes?
+            # If so, commit.
+        }
+        implement tuple_delete_resp.send {
+            debug "tuple_delete_req.send" with self=self, msg=msg
+            # TODO: Unicast the response back to the original sender
         }
     }
 
