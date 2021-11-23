@@ -1,0 +1,10 @@
+#!/bin/bash
+
+todos=$(git grep TODO | cut -d':' -f 1 | uniq -c)
+if [[ -z $todos ]]
+then
+    echo "No outstanding TODOs! ヽ(‘ー\`)ノ "
+else
+    echo "Outstanding TODOs:"
+    echo "$todos"
+fi

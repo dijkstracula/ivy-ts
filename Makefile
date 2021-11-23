@@ -29,4 +29,4 @@ bmc: build
 	cd $(SRCDIR); $(CHK) $(CHKFLAGS) $(TOPLVLSRC)
 
 clean:
-	./ivy_clean.sh
+	./scripts/ivy_clean.sh
