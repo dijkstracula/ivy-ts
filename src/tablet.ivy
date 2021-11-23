@@ -8,26 +8,69 @@ include ts_types
 
 module tablet = {
 
+    # Lookup operations
+
     export action get_exact(tpl: tuple) returns (ret: option[tuple])
     export action get_match(tpl: tuple_template) returns (ret: option[tuple])
-    export action add_tuple(tpl: tuple) returns (already_present: bool)
 
     # TODO: a get_all for failover?
 
+    # Mutation operations
+
+    # add_tuple inserts the tuple into the tablet; if the write was an
+    # idempotent one, that is indicated with the return value.
+    export action add_tuple(tpl: tuple) returns (already_present: bool)
+
+    # Mark and sweep operations
+
+    # mark indicates that a given node has "locked" a given tuple to later
+    # be removed.
+    export action mark(tpl: tuple, marker: node) returns (old_marked_state: bool)
+
+    # sweep physically removes the tuple from the store; the removal protocol
+    # necessitates that the removing node previously was marked for removal.
+    # TODO: is it safe to not verify that the marking node is also sweeping?
+    export action sweep(tpl: tuple) returns (ok: bool)
+
+    # unmark cancels all marks on a tuple.  When a new view is received, if any
+    # nodes have gone down that have marked tuples, we need to ensure those are
+    # rolled back.
+    export action unmark(marker: node)
+
     implementation {
         implement get_exact {
+            debug "tablet.get_exact" with self=self, tpl=tpl;
             # TODO
             ret := option[tuple].empty;
         }
 
         implement get_match {
+            debug "tablet.get_match" with self=self, tpl=tpl;
             # TODO
             ret := option[tuple].empty;
         }
 
         implement add_tuple {
+            debug "tablet.add_tuple" with self=self, tpl=tpl;
             # TODO
             already_present := false;
+        }
+
+        implement mark {
+            debug "tablet.mark" with self=self, tpl=tpl, marker=marker;
+            # TODO
+            old_marked_state := false;
+        }
+
+        implement sweep {
+            debug "tablet.sweep" with self=self, tpl=tpl;
+            # TODO
+            ok := false;
+        }
+
+        implement unmark {
+            debug "tablet.mark" with self=self, marker=marker;
+            # TODO
         }
     }
 

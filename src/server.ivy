@@ -1,7 +1,7 @@
 #lang ivy1.8
 
-# A tuplespace node lives on the hash ring.  It can consume API actions from
-# the client or from other nodes.
+# A tuplespace server makes up a part of the replicated system.  It can consume
+# API actions from an embedded client or from other nodes.
 
 include collections
 include order
@@ -112,14 +112,10 @@ process server(self: node) = {
             msg.src := self;
             msg.tpl := tpl;
             broadcast(msg);
-
-            #store_committed(tpl);
         }
 
         implement remove {
-            var materialised : option[tuple];
-            materialised := read(tpl);
-
+            var materialised := read(tpl);
             if materialised.is_empty {
                 # If there's nothing we can extract that matches the template,
                 # then NACK back to the client.
@@ -130,7 +126,11 @@ process server(self: node) = {
         }
 
         implement read {
-            ret := option[tuple].empty;
+            # TODO: If the tuple's components are all defined, then we can decay
+            # into an exact search.  
+
+            # Otherwise, do a wildcarded search.
+            ret := tuples.get_match(tpl);
         }
 
         #######################################################################
