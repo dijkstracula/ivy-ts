@@ -80,8 +80,8 @@ global {
     }
 
     subclass tuple_delete_resp of tuple_msg_t = {
+        field src : node
         field idem : bool # Was this an idempotent delete (ie. did this tuple not exist?)
-        field dst : node
 
         action handle(self: node, ^msg: tuple_delete_resp)
     }
@@ -111,7 +111,7 @@ process server(self: node) = {
             var msg: tuple_store_req;
             msg.src := self;
             msg.tpl := tpl;
-            msg.send(self);
+            broadcast(msg);
 
             #store_committed(tpl);
         }
@@ -184,9 +184,8 @@ process server(self: node) = {
             # 2) Reply with a `tuple_mark_resp`.
             var resp: tuple_mark_resp;
             resp.ok := false; # TODO
-            resp.dst := msg.src;
-            resp.send(self)
-            unicast(resp, msg.src)
+            resp.src := self;
+            unicast(resp, msg.src);
         }
 
         implement tuple_mark_resp.handle {
@@ -199,13 +198,14 @@ process server(self: node) = {
 
         implement tuple_delete_req.handle {
             debug "tuple_delete_req.handle" with self=self, msg=msg;
-            # TODO: 1) Perform the local write.
+            # TODO: 1) Perform the local delete, ensuring that we have
+            # marked the tuple for deletion.
 
             # 2) Reply with a `tuple_delete_resp`.
             var resp: tuple_delete_resp;
             resp.idem := false; # TODO
-            resp.dst := msg.src;
-            resp.send(self)
+            resp.src := self;
+            unicast(resp, msg.src);
         }
 
         implement tuple_delete_resp.handle {
