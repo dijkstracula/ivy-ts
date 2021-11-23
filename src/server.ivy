@@ -7,6 +7,7 @@ include collections
 include order
 include network
 
+include tablet
 include ts_types
 
 global {

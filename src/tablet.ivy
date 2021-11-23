@@ -1,0 +1,38 @@
+#lang ivy1.8
+
+# A tablet represents a set of tuples.  Depending on the tuplespace's
+# replication strategy, it may either comprise a subset or the entirety of the
+# space; we don't care about that at this level, though.
+
+include ts_types
+
+module tablet = {
+
+    export action get_exact(tpl: tuple) returns (ret: option[tuple])
+    export action get_match(tpl: tuple_template) returns (ret: option[tuple])
+    export action add_tuple(tpl: tuple) returns (already_present: bool)
+
+    # TODO: a get_all for failover?
+
+    implementation {
+        implement get_exact {
+            # TODO
+            ret := option[tuple].empty;
+        }
+
+        implement get_match {
+            # TODO
+            ret := option[tuple].empty;
+        }
+
+        implement add_tuple {
+            # TODO
+            already_present := false;
+        }
+    }
+
+    specification {
+        # TODO: how to even approach this?  Do a linear search
+        # and confirm that a bsearch also finds it?
+    }
+}
