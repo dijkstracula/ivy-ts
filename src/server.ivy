@@ -1,7 +1,7 @@
 #lang ivy1.8
 
-# A tuplespace node lives on the hash ring.  It can consume API actions from
-# the client or from other nodes.
+# A tuplespace server makes up a part of the replicated system.  It can consume
+# API actions from an embedded client or from other nodes.
 
 include collections
 include order
@@ -31,10 +31,6 @@ global {
         # sent.  (The caller may still need to fill in certain fields.)
         # TODO: is this actually useful?  I'm not so sure anymore.
         #action next(self: node, ^msg:tuple_msg_t) returns (ret: option[tuple_msg_t])
-
-        # Encodes the per-message policy to unicast, multicast, or broadcast a
-        # given message type to its recipients.
-        action send(self: node, ^msg: tuple_msg_t)
     }
 
 
@@ -46,15 +42,13 @@ global {
         field tpl : tuple
 
         action handle(self: node, ^msg: tuple_store_req)
-        action send(self: node, ^msg: tuple_store_req)
     }
 
     subclass tuple_store_resp of tuple_msg_t = {
+        field src : node
         field idem : bool # Was this an idempotent write (ie. did this tuple already exist?)
-        field dst : node
 
         action handle(self: node, ^msg: tuple_store_resp)
-        action send(self: node, ^msg: tuple_store_resp)
     }
 
     # A mark indicates that a remote server wishes to atomically remove a value
@@ -65,15 +59,13 @@ global {
         field tpl : tuple
 
         action handle(self: node, ^msg: tuple_mark_req)
-        action send(self: node, ^msg: tuple_mark_req)
     }
 
     subclass tuple_mark_resp of tuple_msg_t = {
+        field src : node
         field ok : bool # Did we mark this successfully?
-        field dst : node
 
         action handle(self: node, ^msg: tuple_mark_resp)
-        action send(self: node, ^msg: tuple_mark_resp)
     }
 
 
@@ -85,15 +77,13 @@ global {
         field tpl : tuple
 
         action handle(self: node, ^msg: tuple_delete_req)
-        action send(self: node, ^msg: tuple_delete_req)
     }
 
     subclass tuple_delete_resp of tuple_msg_t = {
+        field src : node
         field idem : bool # Was this an idempotent delete (ie. did this tuple not exist?)
-        field dst : node
 
         action handle(self: node, ^msg: tuple_delete_resp)
-        action send(self: node, ^msg: tuple_delete_resp)
     }
 
     instance tuple_net : tcp.net(tuple_msg_t)
@@ -111,21 +101,21 @@ process server(self: node) = {
 
     implementation {
 
+        # The overlay network for servers to service client-level operations.
         instance sock : tuple_net.socket
+
+        # The backing store for the node's tuples.
+        instance tuples : tablet
 
         implement insert {
             var msg: tuple_store_req;
             msg.src := self;
             msg.tpl := tpl;
-            msg.send(self);
-
-            #store_committed(tpl);
+            broadcast(msg);
         }
 
         implement remove {
-            var materialised : option[tuple];
-            materialised := read(tpl);
-
+            var materialised := read(tpl);
             if materialised.is_empty {
                 # If there's nothing we can extract that matches the template,
                 # then NACK back to the client.
@@ -136,7 +126,11 @@ process server(self: node) = {
         }
 
         implement read {
-            ret := option[tuple].empty;
+            # TODO: If the tuple's components are all defined, then we can decay
+            # into an exact search.  
+
+            # Otherwise, do a wildcarded search.
+            ret := tuples.get_match(tpl);
         }
 
         #######################################################################
@@ -144,12 +138,12 @@ process server(self: node) = {
         # Network helpers (c/o Ken's HW6 starter)
 
         implement sock.recv(src:tcp.endpoint, msg:tuple_msg_t) {
-            debug "recv" with server = self, msg = msg;
+            debug "server sock.recv" with server = self, msg = msg;
             msg.handle(self);
         }
 
         action unicast(outgoing : tuple_msg_t, dst_id : node) = {
-            debug "send" with server=self, msg=outgoing, dst=dst_id;
+            debug "send" with server = self, msg = outgoing, dst = dst_id;
             sock.send(server(dst_id).sock.id,outgoing);
         }
 
@@ -165,26 +159,20 @@ process server(self: node) = {
 
         implement tuple_store_req.handle {
             debug "tuple_store_req.handle" with self=self, msg=msg;
-            # TODO: 1) Perform the local write.
+            # 1) Perform the local write.
+            var already_present := tuples.add_tuple(msg.tpl);            
+
             # 2) Reply with a `tuple_store_resp`.
             var resp: tuple_store_resp;
-            resp.idem := false; # TODO
-            resp.dst := msg.src;
-            resp.send(self)
-        }
-        implement tuple_store_req.send {
-            debug "tuple_store_req.send" with self=self, msg=msg;
-            broadcast(msg);
+            resp.idem := already_present;
+            resp.src := self;
+            unicast(resp, msg.src)
         }
 
         implement tuple_store_resp.handle {
             debug "tuple_store_resp.handle" with self=self, msg=msg;
             # TODO: Have we received a resp from all nodes?
             # If so, commit.
-        }
-        implement tuple_store_resp.send {
-            debug "tuple_store_req.send" with self=self, msg=msg;
-            # TODO: Unicast the response back to the original sender
         }
 
         # Tuple marking
@@ -196,12 +184,8 @@ process server(self: node) = {
             # 2) Reply with a `tuple_mark_resp`.
             var resp: tuple_mark_resp;
             resp.ok := false; # TODO
-            resp.dst := msg.src;
-            resp.send(self)
-        }
-        implement tuple_mark_req.send {
-            debug "tuple_mark_req.send" with self=self, msg=msg;
-            broadcast(msg);
+            resp.src := self;
+            unicast(resp, msg.src);
         }
 
         implement tuple_mark_resp.handle {
@@ -209,38 +193,25 @@ process server(self: node) = {
             # TODO: Have we received a resp from all nodes?
             # If so, commit.
         }
-        implement tuple_mark_resp.send {
-            debug "tuple_mark_req.send" with self=self, msg=msg;
-            # Unicast the response back to the original sender
-            unicast(msg, msg.dst)
-        }
        
         # Tuple deletion
 
         implement tuple_delete_req.handle {
             debug "tuple_delete_req.handle" with self=self, msg=msg;
-            # TODO: 1) Perform the local write.
+            # TODO: 1) Perform the local delete, ensuring that we have
+            # marked the tuple for deletion.
 
             # 2) Reply with a `tuple_delete_resp`.
             var resp: tuple_delete_resp;
             resp.idem := false; # TODO
-            resp.dst := msg.src;
-            resp.send(self)
-        }
-        implement tuple_delete_req.send {
-            debug "tuple_delete_req.send" with self=self, msg=msg;
-            broadcast(msg);
+            resp.src := self;
+            unicast(resp, msg.src);
         }
 
         implement tuple_delete_resp.handle {
             debug "tuple_delete_resp.handle" with self=self, msg=msg;
             # TODO: Have we received a resp from all nodes?
             # If so, commit.
-        }
-        implement tuple_delete_resp.send {
-            debug "tuple_delete_req.send" with self=self, msg=msg;
-            # Unicast the response back to the original sender
-            unicast(msg, msg.dst)
         }
     }
 
