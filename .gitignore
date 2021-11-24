@@ -3,3 +3,4 @@ src/*.cpp
 src/*.h
 src/*.dsc
 src/*.dSYM
+tags
