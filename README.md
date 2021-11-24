@@ -26,6 +26,17 @@ doc/operations.md   ; Client operations, consistency guarantees, pseudocode
 doc/proposal.md     ; The submitted project proposal
 ```
 
+## Setup:
+
+You may wish to build a tagfile for your editor to consume ([Universal
+Ctags](https://github.com/universal-ctags/ctags) required, and your
+/path/to/ivy may vary):
+
+```
+$ ctags --options=./scripts/ivy.ctags -L<(find ~/code/ivy/ivy/include/1.8/)
+$ ctags --options=./scripts/ivy.ctags --append -R
+```
+
 ## Building and Running:
 
 ```
