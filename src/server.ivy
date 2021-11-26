@@ -13,7 +13,6 @@ include ts_types
 global {
     instance node : iterable
 
-
     # All server messages are internal to the tuplespace implementation;
     # clients do not directly send these messages but simply "call into" the
     # tuplespace with exported actions.
@@ -95,9 +94,15 @@ global {
 
 process server(self: node) = {
 
-    export action insert(tpl: tuple)
-    export action remove(tpl: tuple_template) returns (ret: option[tuple])
     export action read(tpl: tuple_template) returns (ret: option[tuple])
+
+    export action insert(tpl: tuple)
+    export action remove(tpl: tuple_template)
+
+    # Since insert and remove are "blocking" operations, have a separate
+    # callback to be invoked when the operation succeeds.
+    import action insert_resp(ret: tuple)
+    import action remove_resp(ret: option[tuple])
 
     implementation {
 
@@ -107,6 +112,9 @@ process server(self: node) = {
         # The backing store for the node's tuples.
         instance tuples : tablet
 
+        # The in-flight operations and whom we've gotten ACKs back from.
+        # TODO
+
         implement insert {
             var msg: tuple_store_req;
             msg.src := self;
@@ -115,13 +123,17 @@ process server(self: node) = {
         }
 
         implement remove {
-            var materialised := read(tpl);
+            var materialised : option[tuple] := read(tpl);
             if materialised.is_empty {
                 # If there's nothing we can extract that matches the template,
                 # then NACK back to the client.
-                ret := option[tuple].empty;
+                remove_resp(materialised);
             } else {
-                ret := materialised;
+                # Go ahead and mark the tuples to be removed.
+                var msg: tuple_mark_req;
+                msg.src := self;
+                msg.tpl := materialised.contents;
+                broadcast(msg);
             }
         }
 
@@ -166,7 +178,10 @@ process server(self: node) = {
             var resp: tuple_store_resp;
             resp.idem := already_present;
             resp.src := self;
-            unicast(resp, msg.src)
+            unicast(resp, msg.src);
+
+            # 3) Ghost action to remember what we've stored.
+            ghost_stored(self, msg.tpl) := true;
         }
 
         implement tuple_store_resp.handle {
@@ -206,6 +221,8 @@ process server(self: node) = {
             resp.idem := false; # TODO
             resp.src := self;
             unicast(resp, msg.src);
+
+            ghost_stored(self, msg.tpl) := false;
         }
 
         implement tuple_delete_resp.handle {
@@ -227,10 +244,10 @@ process server(self: node) = {
             action remove_committed(t: tuple)
 
             # Is the given tuple 
-            relation stored(N: node, T: tuple)
+            relation ghost_stored(N: node, T: tuple)
 
             after init {
-                stored(N,T) := false;
+                ghost_stored(N,T) := false;
             }
 
             after read(self: node, tpl: tuple_template) returns (ret: option[tuple]) {
@@ -238,16 +255,21 @@ process server(self: node) = {
                 # concurrent removes?
                 if ~ret.is_empty {
                     # If we return anything, it must be present in the tuplespace.
-                    require(stored(N, ret.contents));
+                    require(ghost_stored(N, ret.contents));
                 }
             }
 
-            after remove(self: node, tpl: tuple_template) returns (ret: option[tuple]) {
+            after insert_resp(self: node, ret: tuple) {
+                # Oh lordy, how does this behave with concurrent removals?
+                ensure forall N. ghost_stored(N, ret);
+            }
+
+            after remove_resp(self: node, ret: option[tuple]) {
                 # TODO: I think this is wrong: how does this behave with
                 # concurrent inserts?
                 if ~ret.is_empty {
                     # If we return anything, it must have been extracted from the tuplespace.
-                    require(~stored(N, ret.contents));
+                    require(~ghost_stored(N, ret.contents));
                 }
             }
         }
