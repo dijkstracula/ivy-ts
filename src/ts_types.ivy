@@ -5,15 +5,19 @@
 
 include collections
 
-type t
+global {
 
-# A tuple type is the data structure laid out in tablets in storage nodes.
-# These are returned to clients on lookup operations.
-instance tuple : vector(t)
+    instance node : iterable
 
-# A tuple template is used to specify a query where not every value is filled
-# out: a wildcard is encoded by an empty option and "materialised" into
-# concrete values on lookups.
-instance tuple_template : vector(option[t])
+    type elem
+    interpret elem -> bv[3]
 
-interpret t -> bv[3]
+    # A tuple type is the data structure laid out in tablets in storage nodes.
+    # These are returned to clients on lookup operations.
+    instance tuple : vector(elem)
+
+    # A tuple template is used to specify a query where not every value is filled
+    # out: a wildcard is encoded by an empty option and "materialised" into
+    # concrete values on lookups.
+    instance tuple_template : vector(option[elem])
+}

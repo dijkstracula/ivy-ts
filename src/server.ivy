@@ -11,7 +11,6 @@ include tablet
 include ts_types
 
 global {
-    instance node : iterable
 
     # All server messages are internal to the tuplespace implementation;
     # clients do not directly send these messages but simply "call into" the
@@ -160,8 +159,8 @@ process server(self: node) = {
         }
 
         action broadcast(outgoing : tuple_msg_t) = {
-            for it,dst_id in node.iter {
-                unicast(outgoing, dst_id);
+            for it, dst in node.iter {
+                unicast(outgoing, dst);
             }
         }
 

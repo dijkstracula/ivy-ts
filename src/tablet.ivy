@@ -4,14 +4,34 @@
 # replication strategy, it may either comprise a subset or the entirety of the
 # space; we don't care about that at this level, though.
 
+include collections
+include order
+include numbers
+
 include ts_types
+
+# C/O Ken for his help with some module-juggling to get lexord working for
+# the `row` datatype.  Thanks!
+instance tplord : lexord(elem,index,tuple)
+
+class row = {
+    alias t = this
+
+    field contents : tuple
+    field mark: option[node] 
+
+    instance iter : order_iterator(this)
+}
+function(X: row < Y: row) = tplord.less(X.contents, Y.contents)
 
 module tablet = {
 
+    instance tuples : ordered_set(row)
+
     # Lookup operations
 
-    export action get_exact(tpl: tuple) returns (ret: option[tuple])
-    export action get_match(tpl: tuple_template) returns (ret: option[tuple])
+    action get_match(tmp: tuple_template) returns (ret: option[tuple])
+    action get_exact(tpl: tuple) returns (ret: option[tuple])
 
     # TODO: a get_all for failover?
 
@@ -19,47 +39,85 @@ module tablet = {
 
     # add_tuple inserts the tuple into the tablet; if the write was an
     # idempotent one, that is indicated with the return value.
-    export action add_tuple(tpl: tuple) returns (already_present: bool)
+    action add_tuple(tpl: tuple) returns (already_present: bool)
 
     # Mark and sweep operations
 
     # mark indicates that a given node has "locked" a given tuple to later
     # be removed.
-    export action mark(tpl: tuple, marker: node) returns (old_marked_state: bool)
+    action mark(tpl: tuple, marker: node) returns (old_marked_state: bool)
 
     # sweep physically removes the tuple from the store; the removal protocol
     # necessitates that the removing node previously was marked for removal.
     # TODO: is it safe to not verify that the marking node is also sweeping?
-    export action sweep(tpl: tuple) returns (ok: bool)
+    action sweep(tpl: tuple) returns (ok: bool)
 
-    # unmark cancels all marks on a tuple.  When a new view is received, if any
-    # nodes have gone down that have marked tuples, we need to ensure those are
-    # rolled back.
-    export action unmark(marker: node)
+    # unmark cancels all marks received from some node on a tuple.  When a new
+    # view is received, if any nodes have gone down that have marked tuples, we
+    # need to ensure those are rolled back.
+    action unmark(marker: node)
 
     implementation {
+
         implement get_exact {
             debug "tablet.get_exact" with self=self, tpl=tpl;
-            # TODO
+
             ret := option[tuple].empty;
         }
 
         implement get_match {
-            debug "tablet.get_match" with self=self, tpl=tpl;
-            # TODO
-            ret := option[tuple].empty;
+            debug "tablet.get_match" with self=self, tmp=tmp;
+
+            # If all the components of the template have values, then we can
+            # trivially turn this into a tuple and then call get_exact().
+            var tpl : tuple;
+            var idx : index := tmp.begin;
+            var ok := true;
+            while ok & idx < tmp.end {
+                if tmp.get(idx).is_empty {
+                    ok := false;
+                } else {
+                    tpl := tpl.append(tmp.get(idx).contents);
+                }
+                idx := idx.next;
+            }
+            if tmp.size > 0 & tpl.size = tmp.size {
+                ret := get_exact(tpl);
+            } else {
+                #TODO
+                ret := option[tuple].empty;
+            }
         }
 
         implement add_tuple {
             debug "tablet.add_tuple" with self=self, tpl=tpl;
-            # TODO
-            already_present := false;
+
+            var r : row;
+            r.contents := tpl;
+            r.mark := option[node].empty;
+
+            already_present := tuples.member(r);
+            if ~already_present {
+                tuples.insert(r);
+            }
         }
 
         implement mark {
             debug "tablet.mark" with self=self, tpl=tpl, marker=marker;
-            # TODO
+            
             old_marked_state := false;
+
+            var key : row;
+            key.contents := tpl;
+
+            if tuples.member(key) {
+                #key := tuples.lub(it).value()
+                var it := tuples.lub(row.iter.create(key));
+                key := it.value();
+
+                old_marked_state := (~key.mark.is_empty());
+                key.mark := option[node].just(self);
+            }
         }
 
         implement sweep {
@@ -70,7 +128,13 @@ module tablet = {
 
         implement unmark {
             debug "tablet.mark" with self=self, marker=marker;
-            # TODO
+            var it := tuples.begin();
+            var e := tuples.end();
+
+            while it ~= e {
+                # TODO
+                it := tuples.next(it);
+            }
         }
     }
 
