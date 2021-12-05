@@ -20,4 +20,10 @@ global {
     # out: a wildcard is encoded by an empty option and "materialised" into
     # concrete values on lookups.
     instance tuple_template : vector(option[elem])
+
+    # To check a tuple against a template, all non-empty elements in the
+    # latter must match the former's corresponding elements.
+    function tplchk(Tpl: tuple, Tmp: tuple_template) =
+        Tpl.end() = Tmp.end() & forall I. 0 <= I & I < Tmp.end() ->
+            (~Tmp.value(I).is_empty -> Tpl.value(I) = Tmp.value(I).contents)
 }

@@ -26,7 +26,7 @@ function(X: row < Y: row) = tplord.less(X.contents, Y.contents)
 
 module tablet = {
 
-    instance tuples : ordered_set(row)
+    instance tupleset : ordered_set(row)
 
     # Lookup operations
 
@@ -61,31 +61,61 @@ module tablet = {
 
         implement get_exact {
             debug "tablet.get_exact" with self=self, tpl=tpl;
+            
+            var key : row;
+            key.contents := tpl;
 
-            ret := option[tuple].empty;
+            if tupleset.member(key) {
+                ret := option[tuple].just(tpl);
+            } else {
+                ret := option[tuple].empty;
+            }
         }
 
         implement get_match {
             debug "tablet.get_match" with self=self, tmp=tmp;
 
-            # If all the components of the template have values, then we can
-            # trivially turn this into a tuple and then call get_exact().
-            var tpl : tuple;
+            ret := option[tuple].empty;
+
+            # Build up a prefix value containing the first k concrete
+            # elements of the tuple.
+            var prefix : tuple;
             var idx : index := tmp.begin;
             var ok := true;
             while ok & idx < tmp.end {
                 if tmp.get(idx).is_empty {
                     ok := false;
                 } else {
-                    tpl := tpl.append(tmp.get(idx).contents);
+                    prefix := prefix.append(tmp.get(idx).contents);
                 }
                 idx := idx.next;
             }
-            if tmp.size > 0 & tpl.size = tmp.size {
-                ret := get_exact(tpl);
+            if tmp.size > 0 & prefix.size = tmp.size {
+                # If all the components of the template have values, then we
+                # can trivially turn this into a tuple and then call
+                # get_exact() for a direct lookup.
+                ret := get_exact(prefix);
             } else {
-                #TODO
-                ret := option[tuple].empty;
+                var e := tupleset.end();
+
+                # Here, we're using the property that a tuple's prefix is
+                # always less than the tuple itself.  So, we can use the
+                # prefix's lowest upper bound as a starting point to begin a
+                # search through the tablet.
+                var found := false;
+                var key : row;
+                key.contents := prefix;
+                var it := tupleset.lub(row.iter.create(key));
+
+                while ~found & it ~= e {
+                    var row := it.value();
+                    var candidate := row.contents;
+                    if row.mark.is_empty() & tplchk(candidate, tmp) {
+                        found := true;
+                        ret := option[tuple].just(candidate)
+                    }
+                    it := tupleset.next(it);
+                }
             }
         }
 
@@ -96,9 +126,9 @@ module tablet = {
             r.contents := tpl;
             r.mark := option[node].empty;
 
-            already_present := tuples.member(r);
+            already_present := tupleset.member(r);
             if ~already_present {
-                tuples.insert(r);
+                tupleset.insert(r);
             }
         }
 
@@ -110,13 +140,20 @@ module tablet = {
             var key : row;
             key.contents := tpl;
 
-            if tuples.member(key) {
-                #key := tuples.lub(it).value()
-                var it := tuples.lub(row.iter.create(key));
-                key := it.value();
+            if tupleset.member(key) {
+                var it := tupleset.lub(row.iter.create(key));
+                #var to_be_marked := tupleset.lub(row.iter.create(key)).value();
+                var to_be_marked := it.value();
 
-                old_marked_state := (~key.mark.is_empty());
-                key.mark := option[node].just(self);
+                if to_be_marked.mark.is_empty() {
+                    # We're good to claim this row as ours to mark.
+                    old_marked_state := false;
+                    to_be_marked.mark := option[node].just(self);
+                } else {
+                    # Someone has marked this row.  The server will
+                    # need to roll back their marks and retry.
+                    old_marked_state := true;
+                }
             }
         }
 
@@ -127,13 +164,16 @@ module tablet = {
         }
 
         implement unmark {
-            debug "tablet.mark" with self=self, marker=marker;
-            var it := tuples.begin();
-            var e := tuples.end();
+            debug "tablet.unmark" with self=self, marker=marker;
+            var it := tupleset.begin();
+            var e := tupleset.end();
 
             while it ~= e {
-                # TODO
-                it := tuples.next(it);
+                var tpl := it.value();
+                if ~tpl.mark.is_empty() & tpl.mark.contents() = marker {
+                    tupleset.erase(it, tupleset.next(it));
+                }
+                it := tupleset.next(it);
             }
         }
     }
