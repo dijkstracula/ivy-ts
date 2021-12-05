@@ -44,13 +44,14 @@ global {
 
     subclass tuple_store_resp of tuple_msg_t = {
         field src : node
+        field tpl : tuple
         field idem : bool # Was this an idempotent write (ie. did this tuple already exist?)
 
         action handle(self: node, ^msg: tuple_store_resp)
     }
 
     # A mark indicates that a remote server wishes to atomically remove a value
-    # from the tuplestore.
+    # from the tuplestore.  This is phase one of the 2PC protocol.
 
     subclass tuple_mark_req of tuple_msg_t = {
         field src : node
@@ -61,14 +62,16 @@ global {
 
     subclass tuple_mark_resp of tuple_msg_t = {
         field src : node
+        field tpl : tuple
         field ok : bool # Did we mark this successfully?
 
         action handle(self: node, ^msg: tuple_mark_resp)
     }
 
 
-    # A delete is an internal operation structurally similar to a store - it mutates
-    # the tuplespace by removing a marked tuple from the tuplespace.
+    # A delete is an internal operation structurally similar to a store - it
+    # mutates the tuplespace by removing a marked tuple from the tuplespace.
+    # This is phase two of the 2PC protocol.
 
     subclass tuple_delete_req of tuple_msg_t = {
         field src : node
@@ -79,6 +82,7 @@ global {
 
     subclass tuple_delete_resp of tuple_msg_t = {
         field src : node
+        field tpl : tuple
         field idem : bool # Was this an idempotent delete (ie. did this tuple not exist?)
 
         action handle(self: node, ^msg: tuple_delete_resp)
@@ -111,8 +115,12 @@ process server(self: node) = {
         # The backing store for the node's tuples.
         instance tuples : tablet
 
-        # The in-flight operations and whom we've gotten ACKs back from.
-        # TODO
+        # For the current in-flight operation, how many have we heard back
+        # from?  TODO: at the moment, our commit point is when we've heard from
+        # all nodes, though when we thread the manager in we'll need to make
+        # sure that this then relates to specifically the nodes in the current
+        # view.
+        var acks : vector[node]
 
         implement insert {
             var msg: tuple_store_req;
@@ -122,7 +130,7 @@ process server(self: node) = {
         }
 
         implement remove {
-            var materialised : option[tuple] := read(tpl);
+            var materialised : option[tuple] := tuples.get_match(tpl);
             if materialised.is_empty {
                 # If there's nothing we can extract that matches the template,
                 # then NACK back to the client.
@@ -137,10 +145,6 @@ process server(self: node) = {
         }
 
         implement read {
-            # TODO: If the tuple's components are all defined, then we can decay
-            # into an exact search.  
-
-            # Otherwise, do a wildcarded search.
             ret := tuples.get_match(tpl);
         }
 
@@ -169,7 +173,9 @@ process server(self: node) = {
         # Tuple writing
 
         implement tuple_store_req.handle {
+            require inserting(msg.src);
             debug "tuple_store_req.handle" with self=self, msg=msg;
+
             # 1) Perform the local write.
             var already_present := tuples.add_tuple(msg.tpl);            
 
@@ -177,37 +183,60 @@ process server(self: node) = {
             var resp: tuple_store_resp;
             resp.idem := already_present;
             resp.src := self;
+            resp.tpl := msg.tpl;
             unicast(resp, msg.src);
 
             # 3) Ghost action to remember what we've stored.
-            ghost_stored(self, msg.tpl) := true;
+            stored(self, msg.tpl) := true;
         }
 
         implement tuple_store_resp.handle {
-            debug "tuple_store_resp.handle" with self=self, msg=msg;
+            require inserting(self);
+
+            debug "tuple_store_resp.handle" with self=self, msg=msg, acks=acks;
             # TODO: Have we received a resp from all nodes?
             # If so, commit.
+            acks := acks.append(msg.src);
+            if acks.size() = cast(node.max) + 1 {
+                acks := acks.resize(0, 0);
+                insert_resp(msg.tpl);
+            }
         }
 
         # Tuple marking
 
         implement tuple_mark_req.handle {
             debug "tuple_mark_req.handle" with self=self, msg=msg;
-            # TODO: 1) Perform the local write.
+            # TODO: 1) Perform the local mark.
+            var old_marked_state := tuples.mark(msg.tpl, msg.src);
 
             # 2) Reply with a `tuple_mark_resp`.
             var resp: tuple_mark_resp;
-            resp.ok := false; # TODO
             resp.src := self;
+            resp.tpl := msg.tpl;
+            resp.ok := ~old_marked_state;
             unicast(resp, msg.src);
         }
 
         implement tuple_mark_resp.handle {
             debug "tuple_mark_resp.handle" with self=self, msg=msg;
-            # TODO: Have we received a resp from all nodes?
-            # If so, commit.
+            # Have we received a resp from all nodes?
+            # If so, finish the first phase of the commit protocol
+            # and then progress to the actual deletion.
+
+            # TODO: we need to do something with msg.ok.  If it is
+            # not OK, we need to roll back and retry our removal.
+            acks := acks.append(msg.src);
+            if acks.size() = cast(node.max) + 1 {
+                acks := acks.resize(0, 0);
+
+                var msg2 : tuple_delete_req;
+                msg2.src := self;
+                msg2.tpl := msg.tpl;
+                broadcast(msg2);
+            }
         }
-       
+
         # Tuple deletion
 
         implement tuple_delete_req.handle {
@@ -219,23 +248,28 @@ process server(self: node) = {
             var resp: tuple_delete_resp;
             resp.idem := false; # TODO
             resp.src := self;
+            resp.tpl := msg.tpl;
             unicast(resp, msg.src);
 
-            ghost_stored(self, msg.tpl) := false;
+            stored(self, msg.tpl) := false;
         }
 
         implement tuple_delete_resp.handle {
             debug "tuple_delete_resp.handle" with self=self, msg=msg;
-            # TODO: Have we received a resp from all nodes?
-            # If so, commit.
+
+            # TODO: Have we received a successful resp from all nodes?
+            acks := acks.append(msg.src);
+            if acks.size() = cast(node.max) + 1 {
+                acks := acks.resize(0, 0);
+                remove_resp(option[tuple].just(msg.tpl));
+            }
         }
     }
 
     ###########################################################################
 
-    common {
-        specification {
-
+    specification {
+        common {
             # When this is called, we should consider the tuple committed.
             action store_committed(t: tuple)
 
@@ -243,35 +277,86 @@ process server(self: node) = {
             action remove_committed(t: tuple)
 
             # Is the given tuple 
-            relation ghost_stored(N: node, T: tuple)
+            relation stored(N: node, T: tuple)
+
+            # Does the supplied client have a request in flight?  (We do this
+            # to serialise requests on a given node, since we assume that all
+            # nodes are themselves executing sequentially.)
+            relation client_operating(N: node)
+
+            relation inserting(N: node)
+            relation removing(N: node)
+
+            invariant client_operating(N) <-> inserting(N) | removing(N)
 
             after init {
-                ghost_stored(N,T) := false;
+                stored(N,T) := false;
+                client_operating(N) := false;
+                inserting(N) := false;
+                removing(N) := false;
             }
 
             after read(self: node, tpl: tuple_template) returns (ret: option[tuple]) {
+                debug "after read" with ret=ret;
                 # TODO: I think this is wrong: how does this behave with
                 # concurrent removes?
                 if ~ret.is_empty {
                     # If we return anything, it must be present in the tuplespace.
-                    require(ghost_stored(N, ret.contents));
+                    require(stored(N, ret.contents));
                 }
             }
 
             after insert_resp(self: node, ret: tuple) {
-                # Oh lordy, how does this behave with concurrent removals?
-                ensure forall N. ghost_stored(N, ret);
+                require inserting(self);
+                inserting(self) := false;
+
+                # TODO
+
+                call unblock_client(self);
             }
 
             after remove_resp(self: node, ret: option[tuple]) {
+                require removing(self);
+                removing(self) := false;
+
                 # TODO: I think this is wrong: how does this behave with
                 # concurrent inserts?
                 if ~ret.is_empty {
-                    # If we return anything, it must have been extracted from the tuplespace.
-                    require(~ghost_stored(N, ret.contents));
+                    # If we return anything, it must have been extracted from
+                    # the tuplespace.  
+                    require(~stored(N, ret.contents));
                 }
+
+                call unblock_client(self);
             }
         }
+
+        # Ensure sequential operations on a given node.
+        # (TODO: maybe this is better moved into a `client` isolate?)
+        before read {
+            require ~client_operating(self);
+        }
+        before insert {
+            require ~client_operating(self);
+            require tpl.end > 0;
+            client_operating(self) := true;
+            inserting(self) := true;
+        }
+        before remove {
+            require ~client_operating(self);
+            client_operating(self) := true;
+            removing(self) := true;
+        }
+
+        # Mimic a blocking operation on the client's side returning.
+        action unblock_client = {
+            debug "unblock_client" with self=self;
+            require client_operating(self);
+            client_operating(self) := false;
+        }
+
     }
 }
 
+axiom forall H0,H1. ~(server(H0).sock.id = server(H1).sock.id & H0 ~= H1)
+attribute method=bmc[10]
