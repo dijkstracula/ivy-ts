@@ -23,9 +23,9 @@ $(SRCDIR)$(EXE): $(addprefix $(SRCDIR), $(SRCS))
 	cd $(SRCDIR); $(CC) $(CFLAGS) $(notdir $<)
 
 test: build
-	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE)
+	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE) | sed -e '/{/,/}$$/ d'
 
-bmc: build
+bmc:
 	cd $(SRCDIR); $(CHK) $(CHKFLAGS) $(TOPLVLSRC)
 
 clean:
