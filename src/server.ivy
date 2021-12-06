@@ -28,6 +28,8 @@ global {
         # node.  Produces an empty return value if no such message need be
         # sent.  (The caller may still need to fill in certain fields.)
         # TODO: is this actually useful?  I'm not so sure anymore.
+        # TODO: revisit the nathan/rpc_metaprotocol branch if there's time.
+        # The `andThen` combinator might be what we want here.
         #action next(self: node, ^msg:tuple_msg_t) returns (ret: option[tuple_msg_t])
     }
 
@@ -281,32 +283,32 @@ process server(self: node) = {
             debug "tuple_undo_mark_req.handle" with self=self, msg=msg;
 
             # 1) Perform the local unmark.
-            #tuples.unmark(msg.src);
+            tuples.unmark(msg.src);
 
             # 2) Reply with a `tuple_undo_mark_resp`.
-            #var resp: tuple_undo_mark_resp;
-            #resp.src := self;
-            #resp.tpl := msg.tpl;
-            #resp.ok := ~old_marked_state;
-            #unicast(resp, msg.src);
+            var resp: tuple_undo_mark_resp;
+            resp.src := self;
+            resp.tpl := msg.tpl;
+            resp.ok := true; #TODO: I think this is ok.
+            unicast(resp, msg.src);
         }
 
         implement tuple_undo_mark_resp.handle {
             debug "tuple_undo_mark_resp.handle" with self=self, msg=msg;
-            # Have we received a resp from all nodes?
-            # If so, finish the first phase of the commit protocol
-            # and then progress to the actual deletion.
+            # Have we received a resp from all the nodes who previously
+            # ACKed to us?
+            # If so, we can tell the client to retry.
 
-            # TODO: we need to do something with msg.ok.  If it is
-            #acks := acks.erase(msg.src);
-            #if acks.size() = 0 {
-            #    acks := acks.resize(0, 0);
-            #
-            #     var msg2 : tuple_delete_req;
-            #    msg2.src := self;
-            #    msg2.tpl := msg.tpl;
-            #    broadcast(msg2);
-            #}
+            var it := node.iter.create(msg.src);
+            assert it ~= acks.end();
+
+            acks.erase(it, it.next);
+            ack_count := ack_count - 1;
+            if ack_count = 0 {
+                acks.erase(acks.begin(), acks.end());
+           
+                remove_resp(option[tuple].empty);
+            }
         }
         # Tuple deletion
 
