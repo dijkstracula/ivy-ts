@@ -129,7 +129,7 @@ process server(self: node) = {
     import action remove_resp(ret: option[tuple])
 
 
-    # For the current in-flight operation, how many have we heard back from?  
+    # For the current in-flight operation, how many have we heard back from?
     #
     # TODO: at the moment, our commit point is when we've heard from
     # all nodes, though when we thread the manager in we'll need to make
@@ -186,11 +186,20 @@ process server(self: node) = {
             sock.send(server(dst_id).sock.id,outgoing);
         }
 
-        action broadcast(outgoing : msg_t) = {
-            for it, dst in node.iter {
-                unicast(outgoing, dst);
+        action multicast(outgoing: msg_t, b: node.iter.t, e: node.iter.t) = {
+            var it := b;
+            while it ~= e {
+                unicast(outgoing, it.value());
+                it := it.next();
             }
         }
+
+        action broadcast(outgoing: msg_t) = {
+            var b := node.iter.begin();
+            var e := node.iter.end();
+            multicast(outgoing, b, e);
+        }
+
 
         #######################################################################
 
@@ -201,7 +210,7 @@ process server(self: node) = {
             debug "store_req.handle" with self=self, msg=msg;
 
             # 1) Perform the local write.
-            var already_present := tuples.add_tuple(msg.tpl);            
+            var already_present := tuples.add_tuple(msg.tpl);
 
             # 2) Reply with a `store_resp`.
             var resp: store_resp;
@@ -257,9 +266,7 @@ process server(self: node) = {
                 msg2.src := self;
                 msg2.tpl := msg.tpl;
 
-                #                for it, dst in acks.iter {
-                #    unicast(msg2, dst);
-                #}
+                multicast(msg2, acks.begin(), acks.end());
             }
 
             # Have we received a resp from all nodes?
@@ -308,7 +315,7 @@ process server(self: node) = {
             ack_count := ack_count - 1;
             if ack_count = 0 {
                 acks.erase(acks.begin(), acks.end());
-           
+
                 remove_resp(option[tuple].empty);
             }
         }
@@ -404,7 +411,7 @@ process server(self: node) = {
                 # with concurrent inserts of the same tuple?
                 if ~ret.is_empty {
                     # If we return anything, it must have been extracted
-                    # completely from the tuplespace.  
+                    # completely from the tuplespace.
                     require(~stored(N, ret.contents));
                 }
 
