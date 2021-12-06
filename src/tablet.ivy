@@ -151,11 +151,16 @@ module tablet = {
                     # We're good to claim this row as ours to mark.
                     old_marked_state := false;
                     to_be_marked.mark := option[node].just(self);
+
+                    # Iterators return values by value, not by pointer; argh!!
+                    tupleset.erase(it, tupleset.next(it));
+                    tupleset.insert(to_be_marked);
                 } else {
                     # Someone has marked this row.  The server will
                     # need to roll back their marks and retry.
                     old_marked_state := true;
                 }
+                it := tupleset.lub(row.iter.create(key));
             }
         }
 
@@ -167,9 +172,9 @@ module tablet = {
             key.contents := tpl;
             if tupleset.member(key) {
                 var it := tupleset.lub(row.iter.create(key));
-                var tpl := it.value();
+                var r := it.value();
 
-                ok := ~tpl.mark.is_empty & tpl.mark.contents = self;
+                ok := ~r.mark.is_empty;
                 if ok {
                     tupleset.erase(it, tupleset.next(it));
                 }
@@ -187,6 +192,11 @@ module tablet = {
                 var tpl := it.value();
                 if ~tpl.mark.is_empty() & tpl.mark.contents() = marker {
                     tpl.mark := option[node].empty;
+
+                    # Iterators return values by value, not by pointer; argh!!
+                    # TODO: I suspect this will invalidate the iterator.
+                    tupleset.erase(it, tupleset.next(it));
+                    tupleset.insert(tpl);
                 }
                 it := tupleset.next(it);
             }
@@ -194,7 +204,18 @@ module tablet = {
     }
 
     specification {
-        # TODO: how to even approach this?  Do a linear search
-        # and confirm that a bsearch also finds it?
+        before sweep {
+            # Nobody must have gotten in to sweep out the node before us.
+            var key : row;
+            key.contents := tpl;
+            require tupleset.member(key);
+
+            var it := tupleset.lub(row.iter.create(key));
+            var r := it.value();
+
+            # The row must be marked for sweeping.
+            debug "NBT" with r=r;
+            require ~r.mark.is_empty;
+        }
     }
 }
