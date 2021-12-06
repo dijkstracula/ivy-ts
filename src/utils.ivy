@@ -25,5 +25,6 @@ global {
     # latter must match the former's corresponding elements.
     function tplchk(Tpl: tuple, Tmp: tuple_template) =
         Tpl.end() = Tmp.end() & forall I. 0 <= I & I < Tmp.end() ->
+            # If an element is concretized (nonempty), the values better match.
             (~Tmp.value(I).is_empty -> Tpl.value(I) = Tmp.value(I).contents)
 }

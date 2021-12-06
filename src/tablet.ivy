@@ -8,7 +8,7 @@ include collections
 include order
 include numbers
 
-include ts_types
+include utils
 
 # C/O Ken for his help with some module-juggling to get lexord working for
 # the `row` datatype.  Thanks!

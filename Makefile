@@ -1,7 +1,7 @@
 
 SRCDIR=src/
 TOPLVLSRC=server.ivy
-SRCS=$(TOPLVLSRC) ts_types.ivy tablet.ivy manager.ivy
+SRCS=$(TOPLVLSRC) utils.ivy tablet.ivy manager.ivy
 
 CC=ivyc
 CFLAGS=target=test
