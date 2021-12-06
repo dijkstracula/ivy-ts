@@ -26,7 +26,7 @@ test: build
 	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE) | sed -e '/{/,/}$$/ d'
 
 bmc:
-	cd $(SRCDIR); $(CHK) $(CHKFLAGS) $(TOPLVLSRC)
+	cd $(SRCDIR); $(CHK) $(CHKFLAGS) tablet.ivy
 
 clean:
 	./scripts/ivy_clean.sh

@@ -69,6 +69,25 @@ global {
     }
 
 
+    # A mark rollback indicates that a remote server, having previously marked
+    # some tuples during the first phase of a remove operation, would like to
+    # undo those markings.
+
+    subclass tuple_undo_mark_req of tuple_msg_t = {
+        field src : node
+        field tpl : tuple
+
+        action handle(self: node, ^msg: tuple_undo_mark_req)
+    }
+
+    subclass tuple_undo_mark_resp of tuple_msg_t = {
+        field src : node
+        field tpl : tuple
+        field ok : bool # Did we mark this successfully?
+
+        action handle(self: node, ^msg: tuple_undo_mark_resp)
+    }
+
     # A delete is an internal operation structurally similar to a store - it
     # mutates the tuplespace by removing a marked tuple from the tuplespace.
     # This is phase two of the 2PC protocol.
@@ -89,8 +108,8 @@ global {
     }
 
     instance tuple_net : tcp.net(tuple_msg_t)
-}
 
+}
 
 ###############################################################################
 
@@ -107,20 +126,23 @@ process server(self: node) = {
     import action insert_resp(ret: tuple)
     import action remove_resp(ret: option[tuple])
 
+
+    # For the current in-flight operation, how many have we heard back from?  
+    #
+    # TODO: at the moment, our commit point is when we've heard from
+    # all nodes, though when we thread the manager in we'll need to make
+    # sure that this then relates to specifically the nodes in the current
+    # view.
+    instance acks : ordered_set(node)
+    var ack_count : nat # explicit counter since ordered_set doesn't expose a size()
+
+    # The backing store for the node's tuples.
+    instance tuples : tablet
+
     implementation {
 
         # The overlay network for servers to service client-level operations.
         instance sock : tuple_net.socket
-
-        # The backing store for the node's tuples.
-        instance tuples : tablet
-
-        # For the current in-flight operation, how many have we heard back
-        # from?  TODO: at the moment, our commit point is when we've heard from
-        # all nodes, though when we thread the manager in we'll need to make
-        # sure that this then relates to specifically the nodes in the current
-        # view.
-        var acks : vector[node]
 
         implement insert {
             var msg: tuple_store_req;
@@ -193,12 +215,15 @@ process server(self: node) = {
         implement tuple_store_resp.handle {
             require inserting(self);
 
-            debug "tuple_store_resp.handle" with self=self, msg=msg, acks=acks;
-            # TODO: Have we received a resp from all nodes?
-            # If so, commit.
-            acks := acks.append(msg.src);
-            if acks.size() = cast(node.max) + 1 {
-                acks := acks.resize(0, 0);
+            debug "tuple_store_resp.handle" with self=self, msg=msg, ack_count=ack_count;
+            acks.insert(msg.src);
+            ack_count := ack_count + 1;
+
+            if ack_count = cast(node.max) + 1 {
+                # TODO: Have we received a resp from all nodes?
+                # If so, commit.
+                acks.erase(acks.begin(), acks.end());
+                ack_count := 0;
                 insert_resp(msg.tpl);
             }
         }
@@ -220,15 +245,28 @@ process server(self: node) = {
 
         implement tuple_mark_resp.handle {
             debug "tuple_mark_resp.handle" with self=self, msg=msg;
+
+            # If the marking failed, we need to roll back all nodes
+            # that we did get ACKs from.
+            if ~msg.ok {
+                var msg2 : tuple_undo_mark_req;
+                msg2.src := self;
+                msg2.tpl := msg.tpl;
+
+                #                for it, dst in acks.iter {
+                #    unicast(msg2, dst);
+                #}
+            }
+
             # Have we received a resp from all nodes?
             # If so, finish the first phase of the commit protocol
             # and then progress to the actual deletion.
+            acks.insert(msg.src);
+            ack_count := ack_count + 1;
 
-            # TODO: we need to do something with msg.ok.  If it is
-            # not OK, we need to roll back and retry our removal.
-            acks := acks.append(msg.src);
-            if acks.size() = cast(node.max) + 1 {
-                acks := acks.resize(0, 0);
+            if ack_count = cast(node.max) + 1 {
+                acks.erase(acks.begin(), acks.end());
+                ack_count := 0;
 
                 var msg2 : tuple_delete_req;
                 msg2.src := self;
@@ -237,6 +275,39 @@ process server(self: node) = {
             }
         }
 
+        # Mark Rollback
+
+        implement tuple_undo_mark_req.handle {
+            debug "tuple_undo_mark_req.handle" with self=self, msg=msg;
+
+            # 1) Perform the local unmark.
+            #tuples.unmark(msg.src);
+
+            # 2) Reply with a `tuple_undo_mark_resp`.
+            #var resp: tuple_undo_mark_resp;
+            #resp.src := self;
+            #resp.tpl := msg.tpl;
+            #resp.ok := ~old_marked_state;
+            #unicast(resp, msg.src);
+        }
+
+        implement tuple_undo_mark_resp.handle {
+            debug "tuple_undo_mark_resp.handle" with self=self, msg=msg;
+            # Have we received a resp from all nodes?
+            # If so, finish the first phase of the commit protocol
+            # and then progress to the actual deletion.
+
+            # TODO: we need to do something with msg.ok.  If it is
+            #acks := acks.erase(msg.src);
+            #if acks.size() = 0 {
+            #    acks := acks.resize(0, 0);
+            #
+            #     var msg2 : tuple_delete_req;
+            #    msg2.src := self;
+            #    msg2.tpl := msg.tpl;
+            #    broadcast(msg2);
+            #}
+        }
         # Tuple deletion
 
         implement tuple_delete_req.handle {
@@ -258,9 +329,13 @@ process server(self: node) = {
             debug "tuple_delete_resp.handle" with self=self, msg=msg;
 
             # TODO: Have we received a successful resp from all nodes?
-            acks := acks.append(msg.src);
-            if acks.size() = cast(node.max) + 1 {
-                acks := acks.resize(0, 0);
+            acks.insert(msg.src);
+            ack_count := ack_count + 1;
+
+            if ack_count = cast(node.max) + 1 {
+                acks.erase(acks.begin(), acks.end());
+                ack_count := 0;
+
                 remove_resp(option[tuple].just(msg.tpl));
             }
         }

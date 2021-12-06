@@ -50,11 +50,13 @@ module tablet = {
     # sweep physically removes the tuple from the store; the removal protocol
     # necessitates that the removing node previously was marked for removal.
     # TODO: is it safe to not verify that the marking node is also sweeping?
+    # TODO: in a 2PC protocol, can we ever have ok=false?
     action sweep(tpl: tuple) returns (ok: bool)
 
     # unmark cancels all marks received from some node on a tuple.  When a new
     # view is received, if any nodes have gone down that have marked tuples, we
-    # need to ensure those are rolled back.
+    # need to ensure those are rolled back.  We also use this to undo the first
+    # phase of the two-phase remove protocol if a conflict is found.
     action unmark(marker: node)
 
     implementation {
@@ -98,10 +100,10 @@ module tablet = {
             } else {
                 var e := tupleset.end();
 
-                # Here, we're using the property that a tuple's prefix is
-                # always less than the tuple itself.  So, we can use the
-                # prefix's lowest upper bound as a starting point to begin a
-                # search through the tablet.
+                # Here, we're using the property that lexiographically a
+                # tuple's prefix is always less than the tuple itself.  So, we
+                # can use the prefix's lowest upper bound as a starting point
+                # to begin a search through the tablet.
                 var found := false;
                 var key : row;
                 key.contents := prefix;
@@ -159,8 +161,19 @@ module tablet = {
 
         implement sweep {
             debug "tablet.sweep" with self=self, tpl=tpl;
-            # TODO
             ok := false;
+
+            var key : row;
+            key.contents := tpl;
+            if tupleset.member(key) {
+                var it := tupleset.lub(row.iter.create(key));
+                var tpl := it.value();
+
+                ok := ~tpl.mark.is_empty & tpl.mark.contents = self;
+                if ok {
+                    tupleset.erase(it, tupleset.next(it));
+                }
+            }
         }
 
         implement unmark {
@@ -168,10 +181,12 @@ module tablet = {
             var it := tupleset.begin();
             var e := tupleset.end();
 
+            # We could avoid a full table scan by storing per-node delete
+            # lists, but, this is fine for a prototype.
             while it ~= e {
                 var tpl := it.value();
                 if ~tpl.mark.is_empty() & tpl.mark.contents() = marker {
-                    tupleset.erase(it, tupleset.next(it));
+                    tpl.mark := option[node].empty;
                 }
                 it := tupleset.next(it);
             }
