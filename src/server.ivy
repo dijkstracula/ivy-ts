@@ -19,9 +19,9 @@ global {
     # TODO: It would be nice to be able to namespace these messages under
     # `server` to imply a certain information hiding, but I get errors about
     # dependency cycles...
-    class tuple_msg_t = {
+    class msg_t = {
         # The operation to take when a node receives a particular message.
-        action handle(self: node, ^msg:tuple_msg_t)
+        action handle(self: node, ^msg:msg_t)
 
         # If the message is part of a larger protocol (such as a req/resp
         # pair), produce the message that should be returned to the sending
@@ -30,44 +30,44 @@ global {
         # TODO: is this actually useful?  I'm not so sure anymore.
         # TODO: revisit the nathan/rpc_metaprotocol branch if there's time.
         # The `andThen` combinator might be what we want here.
-        #action next(self: node, ^msg:tuple_msg_t) returns (ret: option[tuple_msg_t])
+        #action next(self: node, ^msg:msg_t) returns (ret: option[msg_t])
     }
 
 
     # A store is an internal operation mutates the tuplespace by adding a tuple
     # to all nodes in the tuplespace.  For details, see doc/operations.md .
 
-    subclass tuple_store_req of tuple_msg_t = {
+    subclass store_req of msg_t = {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg: tuple_store_req)
+        action handle(self: node, ^msg: store_req)
     }
 
-    subclass tuple_store_resp of tuple_msg_t = {
+    subclass store_resp of msg_t = {
         field src : node
         field tpl : tuple
         field idem : bool # Was this an idempotent write (ie. did this tuple already exist?)
 
-        action handle(self: node, ^msg: tuple_store_resp)
+        action handle(self: node, ^msg: store_resp)
     }
 
     # A mark indicates that a remote server wishes to atomically remove a value
     # from the tuplestore.  This is phase one of the 2PC protocol.
 
-    subclass tuple_mark_req of tuple_msg_t = {
+    subclass mark_req of msg_t = {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg: tuple_mark_req)
+        action handle(self: node, ^msg: mark_req)
     }
 
-    subclass tuple_mark_resp of tuple_msg_t = {
+    subclass mark_resp of msg_t = {
         field src : node
         field tpl : tuple
         field ok : bool # Did we mark this successfully?
 
-        action handle(self: node, ^msg: tuple_mark_resp)
+        action handle(self: node, ^msg: mark_resp)
     }
 
 
@@ -75,41 +75,41 @@ global {
     # some tuples during the first phase of a remove operation, would like to
     # undo those markings.
 
-    subclass tuple_undo_mark_req of tuple_msg_t = {
+    subclass undo_mark_req of msg_t = {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg: tuple_undo_mark_req)
+        action handle(self: node, ^msg: undo_mark_req)
     }
 
-    subclass tuple_undo_mark_resp of tuple_msg_t = {
+    subclass undo_mark_resp of msg_t = {
         field src : node
         field tpl : tuple
         field ok : bool # Did we mark this successfully?
 
-        action handle(self: node, ^msg: tuple_undo_mark_resp)
+        action handle(self: node, ^msg: undo_mark_resp)
     }
 
     # A delete is an internal operation structurally similar to a store - it
     # mutates the tuplespace by removing a marked tuple from the tuplespace.
     # This is phase two of the 2PC protocol.
 
-    subclass tuple_delete_req of tuple_msg_t = {
+    subclass delete_req of msg_t = {
         field src : node
         field tpl : tuple
 
-        action handle(self: node, ^msg: tuple_delete_req)
+        action handle(self: node, ^msg: delete_req)
     }
 
-    subclass tuple_delete_resp of tuple_msg_t = {
+    subclass delete_resp of msg_t = {
         field src : node
         field tpl : tuple
         field idem : bool # Was this an idempotent delete (ie. did this tuple not exist?)
 
-        action handle(self: node, ^msg: tuple_delete_resp)
+        action handle(self: node, ^msg: delete_resp)
     }
 
-    instance tuple_net : tcp.net(tuple_msg_t)
+    instance net : tcp.net(msg_t)
 
 }
 
@@ -144,10 +144,10 @@ process server(self: node) = {
     implementation {
 
         # The overlay network for servers to service client-level operations.
-        instance sock : tuple_net.socket
+        instance sock : net.socket
 
         implement insert {
-            var msg: tuple_store_req;
+            var msg: store_req;
             msg.src := self;
             msg.tpl := tpl;
             broadcast(msg);
@@ -161,7 +161,7 @@ process server(self: node) = {
                 remove_resp(materialised);
             } else {
                 # Go ahead and mark the tuples to be removed.
-                var msg: tuple_mark_req;
+                var msg: mark_req;
                 msg.src := self;
                 msg.tpl := materialised.contents;
                 broadcast(msg);
@@ -176,17 +176,17 @@ process server(self: node) = {
 
         # Network helpers (c/o Ken's HW6 starter)
 
-        implement sock.recv(src:tcp.endpoint, msg:tuple_msg_t) {
+        implement sock.recv(src:tcp.endpoint, msg:msg_t) {
             debug "server sock.recv" with server = self, msg = msg;
             msg.handle(self);
         }
 
-        action unicast(outgoing : tuple_msg_t, dst_id : node) = {
+        action unicast(outgoing : msg_t, dst_id : node) = {
             debug "send" with server = self, msg = outgoing, dst = dst_id;
             sock.send(server(dst_id).sock.id,outgoing);
         }
 
-        action broadcast(outgoing : tuple_msg_t) = {
+        action broadcast(outgoing : msg_t) = {
             for it, dst in node.iter {
                 unicast(outgoing, dst);
             }
@@ -196,15 +196,15 @@ process server(self: node) = {
 
         # Tuple writing
 
-        implement tuple_store_req.handle {
+        implement store_req.handle {
             require inserting(msg.src);
-            debug "tuple_store_req.handle" with self=self, msg=msg;
+            debug "store_req.handle" with self=self, msg=msg;
 
             # 1) Perform the local write.
             var already_present := tuples.add_tuple(msg.tpl);            
 
-            # 2) Reply with a `tuple_store_resp`.
-            var resp: tuple_store_resp;
+            # 2) Reply with a `store_resp`.
+            var resp: store_resp;
             resp.idem := already_present;
             resp.src := self;
             resp.tpl := msg.tpl;
@@ -214,10 +214,10 @@ process server(self: node) = {
             stored(self, msg.tpl) := true;
         }
 
-        implement tuple_store_resp.handle {
+        implement store_resp.handle {
             require inserting(self);
 
-            debug "tuple_store_resp.handle" with self=self, msg=msg, ack_count=ack_count;
+            debug "store_resp.handle" with self=self, msg=msg, ack_count=ack_count;
             acks.insert(msg.src);
             ack_count := ack_count + 1;
 
@@ -232,26 +232,26 @@ process server(self: node) = {
 
         # Tuple marking
 
-        implement tuple_mark_req.handle {
-            debug "tuple_mark_req.handle" with self=self, msg=msg;
+        implement mark_req.handle {
+            debug "mark_req.handle" with self=self, msg=msg;
             # TODO: 1) Perform the local mark.
             var old_marked_state := tuples.mark(msg.tpl, msg.src);
 
-            # 2) Reply with a `tuple_mark_resp`.
-            var resp: tuple_mark_resp;
+            # 2) Reply with a `mark_resp`.
+            var resp: mark_resp;
             resp.src := self;
             resp.tpl := msg.tpl;
             resp.ok := ~old_marked_state;
             unicast(resp, msg.src);
         }
 
-        implement tuple_mark_resp.handle {
-            debug "tuple_mark_resp.handle" with self=self, msg=msg;
+        implement mark_resp.handle {
+            debug "mark_resp.handle" with self=self, msg=msg;
 
             # If the marking failed, we need to roll back all nodes
             # that we did get ACKs from.
             if ~msg.ok {
-                var msg2 : tuple_undo_mark_req;
+                var msg2 : undo_mark_req;
                 msg2.src := self;
                 msg2.tpl := msg.tpl;
 
@@ -270,7 +270,7 @@ process server(self: node) = {
                 acks.erase(acks.begin(), acks.end());
                 ack_count := 0;
 
-                var msg2 : tuple_delete_req;
+                var msg2 : delete_req;
                 msg2.src := self;
                 msg2.tpl := msg.tpl;
                 broadcast(msg2);
@@ -279,22 +279,22 @@ process server(self: node) = {
 
         # Mark Rollback
 
-        implement tuple_undo_mark_req.handle {
-            debug "tuple_undo_mark_req.handle" with self=self, msg=msg;
+        implement undo_mark_req.handle {
+            debug "undo_mark_req.handle" with self=self, msg=msg;
 
             # 1) Perform the local unmark.
             tuples.unmark(msg.src);
 
-            # 2) Reply with a `tuple_undo_mark_resp`.
-            var resp: tuple_undo_mark_resp;
+            # 2) Reply with a `undo_mark_resp`.
+            var resp: undo_mark_resp;
             resp.src := self;
             resp.tpl := msg.tpl;
             resp.ok := true; #TODO: I think this is ok.
             unicast(resp, msg.src);
         }
 
-        implement tuple_undo_mark_resp.handle {
-            debug "tuple_undo_mark_resp.handle" with self=self, msg=msg;
+        implement undo_mark_resp.handle {
+            debug "undo_mark_resp.handle" with self=self, msg=msg;
             # Have we received a resp from all the nodes who previously
             # ACKed to us?
             # If so, we can tell the client to retry.
@@ -312,13 +312,13 @@ process server(self: node) = {
         }
         # Tuple deletion
 
-        implement tuple_delete_req.handle {
-            debug "tuple_delete_req.handle" with self=self, msg=msg;
+        implement delete_req.handle {
+            debug "delete_req.handle" with self=self, msg=msg;
             # TODO: 1) Perform the local delete, ensuring that we have
             # marked the tuple for deletion.
 
-            # 2) Reply with a `tuple_delete_resp`.
-            var resp: tuple_delete_resp;
+            # 2) Reply with a `delete_resp`.
+            var resp: delete_resp;
             resp.idem := false; # TODO
             resp.src := self;
             resp.tpl := msg.tpl;
@@ -327,8 +327,8 @@ process server(self: node) = {
             stored(self, msg.tpl) := false;
         }
 
-        implement tuple_delete_resp.handle {
-            debug "tuple_delete_resp.handle" with self=self, msg=msg;
+        implement delete_resp.handle {
+            debug "delete_resp.handle" with self=self, msg=msg;
 
             # TODO: Have we received a successful resp from all nodes?
             acks.insert(msg.src);
