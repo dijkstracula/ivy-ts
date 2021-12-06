@@ -49,7 +49,6 @@ module tablet = {
 
     # sweep physically removes the tuple from the store; the removal protocol
     # necessitates that the removing node previously was marked for removal.
-    # TODO: is it safe to not verify that the marking node is also sweeping?
     # TODO: in a 2PC protocol, can we ever have ok=false?
     action sweep(tpl: tuple) returns (ok: bool)
 
@@ -194,7 +193,6 @@ module tablet = {
                     tpl.mark := option[node].empty;
 
                     # Iterators return values by value, not by pointer; argh!!
-                    # TODO: I suspect this will invalidate the iterator.
                     tupleset.erase(it, tupleset.next(it));
                     tupleset.insert(tpl);
                 }

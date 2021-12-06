@@ -322,8 +322,8 @@ process server(self: node) = {
 
         implement delete_req.handle {
             debug "delete_req.handle" with self=self, msg=msg;
-            # TODO: 1) Perform the local delete, ensuring that we have
-            # marked the tuple for deletion.
+            # 1) Perform the local delete, ensuring that we have marked the
+            # tuple for deletion.
             var ok := tuples.sweep(msg.tpl);
 
             # 2) Reply with a `delete_resp`.
@@ -339,7 +339,8 @@ process server(self: node) = {
         implement delete_resp.handle {
             debug "delete_resp.handle" with self=self, msg=msg;
 
-            # TODO: Have we received a successful resp from all nodes?
+            # Have we received a successful resp from all nodes?  If so, return
+            # the tuple to the client and unblock them.
             acks.insert(msg.src);
             ack_count := ack_count + 1;
 
@@ -384,8 +385,6 @@ process server(self: node) = {
 
             after read(self: node, tpl: tuple_template) returns (ret: option[tuple]) {
                 debug "after read" with ret=ret;
-                # TODO: I think this is wrong: how does this behave with
-                # concurrent removes?
                 if ~ret.is_empty {
                     # If we return anything, it must be present somewhere in
                     # the tuplespace.  It's ok if it's not stored everywhere,

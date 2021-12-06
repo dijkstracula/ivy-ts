@@ -29,12 +29,12 @@ field on a sloppy causal read?
 ### IPC messages:
 
 This operation requires communication with all other nodes:  The originating
-process broadcasts a `server_store_req`, which, when received, will perform a local
-write and reply with a `server_store_resp`.
+process broadcasts a `store_req`, which, when received, will perform a local
+write and reply with a `store_resp`.
 
 ### Commit point:
 
-When all `server_store_resp` messages have been received from our current view.
+When all `store_resp` messages have been received from our current view.
 
 ## Tuple extraction
 
@@ -50,7 +50,7 @@ following two-phase protocol:
 
 ### 1. Hold acquisition
 
-A `tuple_lock_req` message is sent in-order to all nodes, where nodes will mark
+A `lock_req` message is sent in-order to all nodes, where nodes will mark
 the tuple in question with a flag indicating it is being held as part of an
 extraction operation.  To mark a tuple is to promise not to allow anyone else
 to hold it.
@@ -82,9 +82,9 @@ we get `resp`s back, we can hand the tuple back to the client.
 ## Rollback
 
 Before we can retry an extraction we need to unmark all the nodes we previously
-marked.  We broadcast a `tuple_undo_mark_req` message to all such nodes and then
-wait for responses before retrying.
+marked.  We broadcast a `undo_mark_req` message to all such nodes and then wait
+for responses before retrying.
 
 ### Commit point:
 
-When all `tuple_delete_resp` messages have been received from our current view.
+When all `delete_resp` messages have been received from our current view.
