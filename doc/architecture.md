@@ -1,6 +1,31 @@
 # Architecture
 
-TODO: define "point query" as reading a tuple where all components are defined.
+# Tuplespace operations
+
+The consistency model for our tuplespace implementation supports both
+sequentially-consistent as well as weaker operations:
+
+* `insert`: Inserts a tuple into the tuplespace.
+* `remove`: Extracts (i.e. reads and atomically removes) an element from the tuplespace.
+* `read`: Reads (but does not remove or otherwise modify) an element from the tuplespace.
+
+Ivy-ts supports the three basic operations exposed by a tuplespace: tuple reads
+and inserts, and at-most once atomic removal.  The input to a read or removal
+operation may either be an exact tuple (which we'll refer to as a _point
+read_), or a pattern which a stored tuple is unified against.
+
+Since the tuple-space is content-addressable, multiple concurrent `insert`
+operations inserting the same key are idempotent.  By contrast, multiple
+concurrent `remove` operations are different: at most one such operation needs
+to succeed to preserve the notion of an atomic removal.
+
+The `read` operation bypasses the strong consistency semantics of `remove`.
+Therefore, application developers must be aware that concurrent `read` and
+`remove` operations may return the same tuple if the removal by the latter was
+not observed by the former.  In this sense, `read` supports only causal
+consistency.  A comparison might be drawn with executing a parallel program on
+a shared multiprocessor machine, where programmers read a particular machine
+word with both atomic and non-atomic instructions.
 
 # Workload assumptions
 
@@ -50,3 +75,4 @@ Based on our experience with per-index sharding, we chose to pivot from it to a
 _write-all, read-one_ scheme, so that each server in the network is responsible
 for storing all tuples in the tuplespace.  This results in common read
 operations being cheap.
+
