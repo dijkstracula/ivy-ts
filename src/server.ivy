@@ -210,8 +210,6 @@ process server(self: node) = {
             resp.tpl := msg.tpl;
             unicast(resp, msg.src);
 
-            # 3) Ghost action to remember what we've stored.
-            stored(self, msg.tpl) := true;
         }
 
         implement store_resp.handle {
@@ -226,6 +224,10 @@ process server(self: node) = {
                 # If so, commit.
                 acks.erase(acks.begin(), acks.end());
                 ack_count := 0;
+
+                # 3) Ghost action to remember what we've stored.
+                stored(self, msg.tpl) := true;
+
                 insert_resp(msg.tpl);
             }
         }
@@ -353,7 +355,7 @@ process server(self: node) = {
             # When this is called, we should consider the tuple extracted.
             action remove_committed(t: tuple)
 
-            # Is the given tuple 
+            # Is T stored in N's tablet?
             relation stored(N: node, T: tuple)
 
             # Does the supplied client have a request in flight?  (We do this
@@ -378,8 +380,10 @@ process server(self: node) = {
                 # TODO: I think this is wrong: how does this behave with
                 # concurrent removes?
                 if ~ret.is_empty {
-                    # If we return anything, it must be present in the tuplespace.
-                    require(stored(N, ret.contents));
+                    # If we return anything, it must be present somewhere in
+                    # the tuplespace.  It's ok if it's not stored everywhere,
+                    # since a read may be concurrent with an insert or removal.
+                    require(exists N. stored(N, ret.contents));
                 }
             }
 
@@ -396,11 +400,11 @@ process server(self: node) = {
                 require removing(self);
                 removing(self) := false;
 
-                # TODO: I think this is wrong: how does this behave with
-                # concurrent inserts?
+                # TODO: I think this is slightly wrong: how does this behave
+                # with concurrent inserts of the same tuple?
                 if ~ret.is_empty {
-                    # If we return anything, it must have been extracted from
-                    # the tuplespace.  
+                    # If we return anything, it must have been extracted
+                    # completely from the tuplespace.  
                     require(~stored(N, ret.contents));
                 }
 
@@ -415,7 +419,7 @@ process server(self: node) = {
         }
         before insert {
             require ~client_operating(self);
-            require tpl.end > 0;
+            require tpl.end > 0; # Don't try to insert the empty tuple.
             client_operating(self) := true;
             inserting(self) := true;
         }
