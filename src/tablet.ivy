@@ -1,5 +1,4 @@
 #lang ivy1.8
-
 # A tablet represents a set of tuples.  Depending on the tuplespace's
 # replication strategy, it may either comprise a subset or the entirety of the
 # space; we don't care about that at this level, though.
@@ -45,7 +44,7 @@ module tablet = {
 
     # mark indicates that a given node has "locked" a given tuple to later
     # be removed.
-    action mark(tpl: tuple, marker: node) returns (old_marked_state: bool)
+    action mark(tpl: tuple, marker: node) returns (ok: bool)
 
     # sweep physically removes the tuple from the store; the removal protocol
     # necessitates that the removing node previously was marked for removal.
@@ -136,7 +135,7 @@ module tablet = {
         implement mark {
             debug "tablet.mark" with self=self, tpl=tpl, marker=marker;
             
-            old_marked_state := false;
+            ok := false;
 
             var key : row;
             key.contents := tpl;
@@ -148,19 +147,20 @@ module tablet = {
 
                 if to_be_marked.mark.is_empty() {
                     # We're good to claim this row as ours to mark.
-                    old_marked_state := false;
                     to_be_marked.mark := option[node].just(self);
+                    ok := true;
 
                     # Iterators return values by value, not by pointer; argh!!
                     tupleset.erase(it, tupleset.next(it));
                     tupleset.insert(to_be_marked);
-                } else {
-                    # Someone has marked this row.  The server will
-                    # need to roll back their marks and retry.
-                    old_marked_state := true;
                 }
-                it := tupleset.lub(row.iter.create(key));
             }
+
+            # If ok is false at this point, either:
+            # 1) the tuple doesn't exist in our tupleset (perhaps because we are
+            # very far behind a write);
+            # 2) a concurrent remover has already marked this node for removal.
+            # In either case, the caller needs to retry.
         }
 
         implement sweep {
@@ -209,6 +209,7 @@ module tablet = {
             require tupleset.member(key);
 
             var it := tupleset.lub(row.iter.create(key));
+            require it ~= tupleset.end();
             var r := it.value();
 
             # The row must be marked for sweeping.

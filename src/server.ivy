@@ -138,6 +138,9 @@ process server(self: node) = {
     instance acks : ordered_set(node)
     var ack_count : nat # explicit counter since ordered_set doesn't expose a size()
 
+    # Are we undoing some marking operations?
+    var rolling_back : bool 
+
     # The backing store for the node's tuples.
     instance tuples : tablet
 
@@ -211,6 +214,7 @@ process server(self: node) = {
 
             # 1) Perform the local write.
             var already_present := tuples.add_tuple(msg.tpl);
+            stored(self, msg.tpl) := true; # Ghost action to remember what we've stored.
 
             # 2) Reply with a `store_resp`.
             var resp: store_resp;
@@ -226,6 +230,7 @@ process server(self: node) = {
 
             debug "store_resp.handle" with self=self, msg=msg, ack_count=ack_count;
             acks.insert(msg.src);
+
             ack_count := ack_count + 1;
 
             if ack_count = cast(node.max) + 1 {
@@ -233,8 +238,6 @@ process server(self: node) = {
                 acks.erase(acks.begin(), acks.end());
                 ack_count := 0;
 
-                # 3) Ghost action to remember what we've stored.
-                stored(self, msg.tpl) := true;
 
                 insert_resp(msg.tpl);
             }
@@ -245,43 +248,47 @@ process server(self: node) = {
         implement mark_req.handle {
             debug "mark_req.handle" with self=self, msg=msg;
             # 1) Perform the local mark.
-            var old_marked_state := tuples.mark(msg.tpl, msg.src);
+            var ok := tuples.mark(msg.tpl, msg.src);
 
             # 2) Reply with a `mark_resp`.
             var resp: mark_resp;
             resp.src := self;
             resp.tpl := msg.tpl;
-            resp.ok := ~old_marked_state;
+            resp.ok := ok;
             unicast(resp, msg.src);
         }
 
         implement mark_resp.handle {
             debug "mark_resp.handle" with self=self, msg=msg;
 
-            # If the marking failed, we need to roll back all nodes
-            # that we did get ACKs from.
-            if ~msg.ok {
-                var msg2 : undo_mark_req;
-                msg2.src := self;
-                msg2.tpl := msg.tpl;
+            if ~rolling_back {
+                # If the marking failed, we need to roll back all nodes
+                # that we did get ACKs from.
+                if ~msg.ok {
+                    rolling_back := true;
 
-                multicast(msg2, acks.begin(), acks.end());
-            }
+                    var msg2 : undo_mark_req;
+                    msg2.src := self;
+                    msg2.tpl := msg.tpl;
 
-            # Have we received a resp from all nodes?
-            # If so, finish the first phase of the commit protocol
-            # and then progress to the actual deletion.
-            acks.insert(msg.src);
-            ack_count := ack_count + 1;
+                    multicast(msg2, acks.begin(), acks.end());
+                }
 
-            if ack_count = cast(node.max) + 1 {
-                acks.erase(acks.begin(), acks.end());
-                ack_count := 0;
+                # Have we received a resp from all nodes?
+                # If so, finish the first phase of the commit protocol
+                # and then progress to the actual deletion.
+                acks.insert(msg.src);
+                ack_count := ack_count + 1;
 
-                var msg2 : delete_req;
-                msg2.src := self;
-                msg2.tpl := msg.tpl;
-                broadcast(msg2);
+                if ack_count = cast(node.max) + 1 {
+                    acks.erase(acks.begin(), acks.end());
+                    ack_count := 0;
+
+                    var msg2 : delete_req;
+                    msg2.src := self;
+                    msg2.tpl := msg.tpl;
+                    broadcast(msg2);
+                }
             }
         }
 
@@ -303,21 +310,28 @@ process server(self: node) = {
 
         implement undo_mark_resp.handle {
             debug "undo_mark_resp.handle" with self=self, msg=msg;
-            # Have we received a resp from all the nodes who previously
-            # ACKed to us?
-            # If so, we can tell the client to retry.
 
-            var it := node.iter.create(msg.src);
-            assert it ~= acks.end();
+            if rolling_back {
+                # Note that `acks` behaves differently here: as we get responses,
+                # we want to _remove_ them from the structure, and commit when the
+                # ACKs are all gone.
+                var it := node.iter.create(msg.src);
+                assert it ~= acks.end();
 
-            acks.erase(it, it.next);
-            ack_count := ack_count - 1;
-            if ack_count = 0 {
-                acks.erase(acks.begin(), acks.end());
+                # Have we received a resp from all the nodes who previously
+                # ACKed to us?
+                # If so, we can tell the client to retry.
+                acks.erase(it, it.next);
+                ack_count := ack_count - 1;
+                if ack_count = 0 {
+                    rolling_back := false;
+                    acks.erase(acks.begin(), acks.end());
 
-                remove_resp(option[tuple].empty);
+                    remove_resp(option[tuple].empty);
+                }
             }
         }
+
         # Tuple deletion
 
         implement delete_req.handle {
@@ -325,6 +339,7 @@ process server(self: node) = {
             # 1) Perform the local delete, ensuring that we have marked the
             # tuple for deletion.
             var ok := tuples.sweep(msg.tpl);
+            stored(self, msg.tpl) := false;
 
             # 2) Reply with a `delete_resp`.
             var resp: delete_resp;
@@ -332,23 +347,26 @@ process server(self: node) = {
             resp.src := self;
             resp.tpl := msg.tpl;
             unicast(resp, msg.src);
-
-            stored(self, msg.tpl) := false;
         }
 
         implement delete_resp.handle {
             debug "delete_resp.handle" with self=self, msg=msg;
 
-            # Have we received a successful resp from all nodes?  If so, return
-            # the tuple to the client and unblock them.
-            acks.insert(msg.src);
-            ack_count := ack_count + 1;
+            if ~rolling_back {
+                var it := node.iter.create(msg.src);
+                assert it ~= acks.end();
 
-            if ack_count = cast(node.max) + 1 {
-                acks.erase(acks.begin(), acks.end());
-                ack_count := 0;
+                acks.insert(msg.src);
+                ack_count := ack_count + 1;
 
-                remove_resp(option[tuple].just(msg.tpl));
+                # Have we received a successful resp from all nodes?  If so, return
+                # the tuple to the client and unblock them.
+                if ack_count = cast(node.max) + 1 {
+                    acks.erase(acks.begin(), acks.end());
+                    ack_count := 0;
+
+                    remove_resp(option[tuple].just(msg.tpl));
+                }
             }
         }
     }
@@ -374,7 +392,16 @@ process server(self: node) = {
             relation inserting(N: node)
             relation removing(N: node)
 
+            # The only blocking operations we allow are inserts and removes,
+            # and we can only be doing one at a time.
             invariant client_operating(N) <-> inserting(N) | removing(N)
+            invariant inserting(N) -> ~removing(N)
+            invariant removing(N) -> ~inserting(N)
+
+            # We should only be rolling back if we're in the process of removing
+            # a tuple.
+            invariant rolling_back(N) -> removing(N)
+
 
             after init {
                 stored(N,T) := false;
@@ -411,7 +438,7 @@ process server(self: node) = {
                 if ~ret.is_empty {
                     # If we return anything, it must have been extracted
                     # completely from the tuplespace.
-                    require(~stored(N, ret.contents));
+                    #require(~stored(N, ret.contents));
                 }
 
                 call unblock_client(self);
@@ -431,6 +458,7 @@ process server(self: node) = {
         }
         before remove {
             require ~client_operating(self);
+            require tpl.end > 0; # Don't try to remove the empty tuple.
             client_operating(self) := true;
             removing(self) := true;
         }
