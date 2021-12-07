@@ -7,7 +7,7 @@ CC=ivyc
 CFLAGS=target=test
 
 LCH=ivy_launch
-LCHFLAGS=node.max=2 iters=1000
+LCHFLAGS=node.max=2 iters=10000
 EXE=server
 
 CHK=ivy_check

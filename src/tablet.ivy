@@ -156,11 +156,15 @@ module tablet = {
                     tupleset.erase(it, tupleset.next(it));
                     tupleset.insert(to_be_marked);
                 }
-            }
-
+            } 
             # If ok is false at this point, either:
             # 1) the tuple doesn't exist in our tupleset (perhaps because we are
             # very far behind a write);
+            else {
+                debug "marking node is behind an insert: inserting" with self=self, tpl=tpl;
+                var ignored := add_tuple(tpl);
+            }
+
             # 2) a concurrent remover has already marked this node for removal.
             # In either case, the caller needs to retry.
         }
@@ -224,7 +228,6 @@ module tablet = {
 
 
                     it := tupleset.lub(row.iter.create(tpl));
-                    debug "NBT: unmark" with tpl=it.value();
                 }
                 it := tupleset.next(it);
             }
