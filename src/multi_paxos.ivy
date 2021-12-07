@@ -1,0 +1,470 @@
+#lang ivy1.8
+
+# Homework 6
+# ----------
+#
+# The assignment is to implement multiple-decree Paxos, in particular,
+# the version theat allows multiple instances to be decided in
+# parallel.  As we saw, this can lead to "gaps" the the decision
+# sequence, which the server fills in with "no-ops". We specify the following
+# properties:
+#
+# 1) Agreement -- we cannot decide two different values for the same instance.
+# 2) Validity -- every decided value has been proposed
+# 3) Conformance -- every decision is allowed by the abstract model
+# 4) Ordering -- each serv reports the decision instances in order
+#
+# See HINT below for suggestions on how to encode the per-instance state.
+
+include numbers
+include network
+
+# Here is the abstract model of Multi-Paxos. It is quite similar to
+# single decree paxos, except the some of the actions are
+# parameterized by the instance number.
+
+include multi_paxos_abstract
+
+# Every round has a leader. We represent this with the inverse
+# functional relation `leader_of`. If we use the spec of this
+# isolate, we get just the injectivity property, whereas the
+# impl also gives us totality.
+
+# Our template is parameterized on a node id type `node`, a value type
+# `value_t` and an value `noop` of type `value_t` the represents 'no
+# operation'.
+
+template isolate multi_paxos(node,value_t,noop)
+with value_t =
+{
+
+    # Here we have message types. They are similar to single-decree Paxos
+    # except that they also contain instance numbers. In the case of 'prepare',
+    # we mean "prepare round `r` in all instances of Paxos `>= inst`". 
+
+    common {
+
+            instance round_t : unbounded_sequence
+            instance instance_t : unbounded_sequence
+            global {
+                instance nset : indexset(node)
+            }
+            # This is an uninterpreted type of values to decide.
+            
+            class vote_t = {
+                field accepted : bool
+                field src : node
+                field round : round_t
+                field value : value_t
+            }
+
+            instance vote_vec : vector(vote_t)
+
+            parameter t_fail : nat = 2
+
+            class msg_t = {
+                action handle(self:node, ^msg:msg_t)
+            }
+
+            subclass prepare_msg of msg_t = {
+                field src : node
+                field round : round_t
+                field inst : instance_t
+                action handle(self:node,^msg:prepare_msg)
+            }
+
+            subclass prepared_msg of msg_t = {
+                field inst : instance_t
+                field src : node
+                field round : round_t
+                field votes : vote_vec
+                action handle(self:node,^msg:prepared_msg)
+            }
+
+            subclass propose_msg of msg_t = {
+                field inst : instance_t
+                field src : node
+                field round : round_t
+                field value : value_t
+                action handle(self:node,^msg:propose_msg)
+            }
+
+            subclass accept_msg of msg_t = {
+                field inst : instance_t
+                field vote : vote_t
+                action handle(self:node,^msg:accept_msg)
+            }
+    }
+
+    object server = {
+
+        # Our interface. Notice that the `propose` action doesn't
+        # give an instance number. The proposer should give the proposed value
+        # the next available instance number. Each `decide` callback gives the
+        # instance number of the decision. The instances should be decided *in order*
+        # so that the state machine using Paxos can process them in order.
+
+        action propose(v:value_t)
+        action decide(i:instance_t,v:value_t)
+
+
+
+        common { 
+
+            specification {
+
+                relation decided(I:instance_t)
+                var decision(I:instance_t) : value_t
+                relation proposed(I:instance_t,N:node)
+                var proposal(I:instance_t,N:node) : value_t
+                var num_decided(N:node) : instance_t
+
+                after init {
+                    decided(I) := false;
+                    proposed(I,N) := false;
+                    num_decided(N) := 0;
+                }
+
+                before propose(self:node,v:value_t) {
+                    var inst := num_decided(self);
+                    require ~proposed(inst,self);
+                    proposed(inst,self) := true;
+                    proposal(inst,self) := v;
+                }
+
+                before decide(self:node,i:instance_t,v:value_t)  {
+                    # The agreement property
+                    require decided(i) -> v = decision(i);
+                    # The validity property (do not allow noops)
+                    require exists N. proposed(i,N) & proposal(i,N) = v;
+                    # The ordering property
+                    require i = num_decided(self);
+
+                    decided(i) := true;
+                    decision(i) := v;
+                    num_decided(self) := num_decided(self).next;
+                }
+
+
+            }
+        }
+
+        implementation {
+
+            common {
+                private {
+                    instance protocol : multi_paxos_abstract(node,value_t)
+                    
+                    # The conformance property (every decision must also be
+                    # made by the abstract model).
+                    
+                    invariant decided(I) -> protocol.learn(I,decision(I))
+                }
+            }
+
+            # Here is the implementation state. The state is basically the same
+            # as for single-decree Paxos, but some state needs to
+            # be encoded on a per-instance basis.
+
+            # HINT: The easiest way to do this in Ivy is to use a map from
+            # `instance_t` to the state value. Since the map doesn't have a
+            # 'length', we use additional state variables to keep track of
+            # the upper bounds of the maps. Alternatively, use can use
+            # vectors for the per-instance state and manage the length of
+            # the vectors. If you do, notice that you can write this
+            # to resize a vector: `v := v.resize(len,val)` where `val` is
+            # the value to initialize the new cells. Also, the Ivy notation
+            # for `v[i] = e` is (sadly) `v := v.set(i,e)`.
+            #
+            # Notice in both strategies we build up garbage over time. Don't
+            # worry about this for now. In a real implemenation, we would
+            # need to truncate the old instances at some point, but this adds
+            # some complication to the protocol.
+
+            var current_round : round_t                    # latest round we have seen
+
+            # Proposer state
+            var proposer_round : round_t                   # latest round in which we are leader (if any)
+            var round_prepared : bool                      # have we achieved a quorum as leader?
+            var joined: nset                               # nodes that have prepared for us
+            var joined_vote(I:instance_t) : vote_t         # best vote amonst those prepared
+            var next_inst : instance_t                     # least unproposed instance
+            var monitor_round : round_t                    # Monitor leader of this round for failure
+
+            # Acceptor state
+            var my_vote(I:instance_t) : vote_t             # our latest acceptance of a proposal
+
+            # Learner state
+            var idecided(I:instance_t) : bool              # have we decided?
+            var decide_quorum(I:instance_t) : nset         # acceptors we have seen in current round
+            var decide_value(I:instance_t) : value_t       # decision at each instance
+            var next_decide : instance_t                   # least undecided instance
+
+            # Instance upper bounds
+
+            var next_accept : instance_t                   # upper bound on acceptor state
+            var next_vote : instance_t                     # upper bound on proposer and learner state
+
+            # Initializations are mostly obvious. Note, though, that we
+            # start with `round_prepared` true. This is because nobody can
+            # vote with a round < 0, so round zero is always prepared.
+            #
+            # HINT: The maps holding per-instance state start out uninitialized.
+
+            after init {
+                current_round := 0;
+                proposer_round := 0;
+                round_prepared := true;
+                joined := nset.fullset;
+                next_inst := 0;
+                next_accept := 0;
+                next_vote := 0;
+                next_decide := 0;
+                monitor_round := 0;
+            }
+
+            # The leader of round R is R mod the number of processes.
+
+            function leader_of(N:node,R:round_t) = round_t.mod(R,cast(node.max)+1) = cast(N)
+
+            # This procedure makes a proposal of value `v` in `proposer_round`. This broadcasts
+            # a propose message. In addition, we call the ghost action `handle_prepared` to
+            # prepare the round and make a proposal in the abstreact model. We have to pass
+            # the set of nodes `joined` in our quorum, as well as the best vote `joined_vote`
+            # among out quorum. 
+
+            action send_proposal(i:instance_t, v:value_t) = {
+                call protocol.handle_prepared(i,proposer_round, joined, joined_vote(i), v); # ghost
+                var m: propose_msg;
+                m.inst := i;
+                m.value := v;
+                m.round := proposer_round;
+                broadcast(m);
+            }
+
+
+            # When we get a proposed value from the environment, we try to
+            # propose it. We do this is we think we are leader and if we
+            # haven't already made a proposal in `proposer_round`.
+
+            implement propose(v:value_t) {
+                if leader_of(self, proposer_round) & round_prepared {
+                    debug "propose" with leader = self, value = v, round = proposer_round, inst = next_inst;
+                    send_proposal(next_inst,v);
+                    next_inst := next_inst.next;
+                } 
+            }
+
+            # Now we have handlers for incoming messages. This one is for
+            # 'prepare' messages. We can only promise to join a round if
+            # it is greater than `current_round`. We change to the new
+            # round and send a message back to the leader saying we
+            # promise not to participate in any lesser rounds. We also
+            # call the ghost action `handle_prepare` so that the abstract
+            # model tracks this promise. HINT: in our prepared message
+            # we now have to send a vector of our votes in all instances
+            # >= the requested instance.
+
+            implement prepare_msg.handle(msg:prepare_msg) {
+                if current_round < msg.round {
+                    change_round(msg.round);
+                    var leader := msg.src;
+                    var m2 : prepared_msg;
+                    m2.src := self;
+                    var inst := msg.inst;
+                    debug "prepared" with next=next_accept;
+                    while inst < next_accept {
+                        m2.votes := m2.votes.append(my_vote(inst));
+                        inst := inst.next;
+                    }
+                    m2.round := current_round;
+                    unicast(m2,leader);
+                    protocol.handle_prepare(self,current_round);  # ghost
+                }
+            }
+
+            # For an incoming `prepared` message, assuming it is for the
+            # round we are preparing and we have not already finished preparing,
+            # we add the sender to our quorum. If its vote is better that what we have seen,
+            # we record it as our best vote. Then if our quorum has become a majority,
+            # we mark the round prepared. If our quorum had a vote in lesser rounds, we
+            # re-propose the best vote. HINT: we now need to handle *all* of the instances
+            # we see in the prepared messages and fill in the undecided ones with 'noop'.
+            #
+
+            implement prepared_msg.handle(m:prepared_msg) {
+                if proposer_round = m.round & ~round_prepared {
+
+                    joined := joined.add(m.src);
+
+                    var inst := next_inst;
+                    for it,v in m.votes {
+                        if ~joined_vote(inst).accepted | joined_vote(inst).round < v.round {
+                            joined_vote(inst) := v;
+                            if inst >= next_vote {
+                                next_vote := inst.next;
+                            }
+                        }
+                        inst := inst.next;
+                    }
+
+                    # activate round:
+                    if joined.majority {
+                        debug "activated" with server = self, round = proposer_round, current_round = current_round, inst = next_inst; 
+                        round_prepared := true;
+                        while next_inst < next_vote {
+                            if joined_vote(next_inst).accepted {
+                                send_proposal(next_inst,joined_vote(next_inst).value);
+                            } else {
+                                send_proposal(next_inst,noop);
+                            }
+                            next_inst := next_inst.next;
+                        }
+                    }
+                }
+            }
+
+            # For an incoming `propose` message, we check that we have not
+            # promised to ignore it. Then if its for a greater round than
+            # we have seen, we update out current round (on the theory
+            # that our current round is dead and it is pointless to accept
+            # a value in it). Then we accept the proposal by creating a
+            # vote and broadcasting it in an 'accept' message. Note in real implementations
+            # of Paxos, we would just send our vote to the leader and expect the leader
+            # to make the decision and braodcast the result, so we would avoid a quadractic number
+            # of messages. We also call the ghost action `handle_proposal` so that the
+            # abstarct model tracks the acceptance of the proposal. HINT: we now need to
+            # store our votes in a map, and keep track of the upper bound.
+
+            implement propose_msg.handle(m:propose_msg) {
+                if (current_round <= m.round) {
+                    if (current_round < m.round) {
+                        change_round(m.round);
+                    }
+                    var vt : vote_t;
+                    vt.accepted := true;
+                    vt.round := current_round;
+                    vt.src := self;
+                    vt.value := m.value;
+                    my_vote(m.inst) := vt;
+                    next_accept := instance_t.max2(m.inst.next,next_accept);
+                    var m2 : accept_msg;
+                    m2.inst := m.inst;
+                    m2.vote := vt;
+                    broadcast(m2);
+                    debug "accepting" with inst=m.inst, next=next_accept;
+                    protocol.handle_proposal(m.inst,self,current_round,m.value);
+                }
+            }
+
+            # For an incoming `accept` message, we check that we have not
+            # already decided and that the mesage is not from an old
+            # round. If it is from a round we havent seen, we move up to
+            # that round. We then add the sender to the learner's quorum.
+            # If we have a majority, we make a decision and inform our client
+            # by calling `decide`, recording the fact that we have decided. We
+            # also call the ghost action `handle_accept`, giving it our
+            # decision and our quorum, so that the abstract model also can make
+            # the decision. HINT: this is a litte tricky. We need to give the
+            # decisions to the client *in order*. If we decide an instance
+            # here, we need to store the vote and then see if we can pass some
+            # votes to the client. We have to stop if theres a 'gap' in the decisions.
+
+            implement accept_msg.handle(m:accept_msg) {
+                if (~idecided(m.inst) | m.inst >= next_decide) & m.vote.round >= current_round {
+                    if current_round < m.vote.round {
+                        change_round(m.vote.round);
+                    }
+                    if m.inst >= next_vote {
+                        next_vote := m.inst.next;
+                    }
+                    decide_quorum(m.inst) := decide_quorum(m.inst).add(m.vote.src);
+                    if decide_quorum(m.inst).majority {
+                        protocol.handle_accept(m.inst,self, current_round, m.vote.value, decide_quorum(m.inst));
+                        idecided(m.inst) := true;
+                        decide_value(m.inst) := m.vote.value;
+                        while next_decide < next_vote & idecided(next_decide) {
+                            decide(next_decide,decide_value(next_decide));
+                            next_decide := next_decide.next;
+                        }
+                    }
+                }
+            }
+
+            # When we change to a new round, our decision quorum goes back to empty.
+
+            action change_round(r:round_t) = {
+                current_round := r;
+                var inst := next_decide;
+                while inst < next_vote {  # Moving to the next round, we clear the stored votes!
+                    decide_quorum(inst) := nset.emptyset;
+                    inst := inst.next;
+                }
+                monitor_round := current_round;
+            }
+
+
+            # Here is where we start a new round. When we learn that the leader we are monitoring
+            # is down, we check whether we are the new leader. Here, we just assume there is a failure
+            # detector i the environment that will tell us when a node is down by calling `is_down`.
+            # HINT: remember we have to clear out `joined_vote` when we start
+            # preparing a new round!
+
+            export action is_down(n:node)
+
+            implement is_down {
+                if leader_of(n,monitor_round) & n ~= self {
+                    monitor_round := monitor_round.next;
+                    if leader_of(self,monitor_round) & proposer_round <= current_round {
+                        proposer_round := monitor_round;
+                        joined := nset.emptyset;
+                        var inst := next_decide;
+                        while inst < next_vote {
+                            joined_vote(inst).accepted := false;
+                            inst := inst.next;
+                        }
+                        var m : prepare_msg;
+                        m.src := self;
+                        m.round := proposer_round;
+                        m.inst := next_decide;
+                        next_inst := next_decide;
+                        round_prepared := false;
+                        broadcast(m);
+                        debug "preparing round" with server = self, round = proposer_round;
+                    }
+                }
+            }
+
+            # Here's our communication medium. 
+
+            common {
+                instance net : tcp_test.net(msg_t)
+            }
+
+            instance sock : net.socket
+
+            implement sock.recv(src:tcp.endpoint, msg:msg_t) {
+                debug "recv" with server = self, msg = msg;
+                msg.handle(self);
+            }
+
+            action unicast(outgoing:msg_t, dst_id : node) = {
+                debug "send" with server=self, msg=outgoing, dst=dst_id;
+                sock.send(manager.paxos.server(dst_id).sock.id,outgoing);
+            }
+
+
+            action broadcast(outgoing:msg_t) = {
+                for it,dst_id in node.iter {
+                    unicast(outgoing, dst_id);
+                }
+            }
+        }
+    } 
+
+#    common {
+#        isolate iso=this with value_t, vector[client.manager.paxos.vote_t], vector[client.manager.paxos.msg_t]
+#    }
+
+}
+

@@ -1,0 +1,157 @@
+#lang ivy1.8
+
+# Here we have an abstract model of Multi-Paxos with a proof of consistency.
+
+include order
+include collections
+include indexset
+
+# The library `nodes` contains a definition of an iterable type `node`
+# (in other words, a host id type) and a type `nodeset` that
+# represents a set of nodes. In particular, `nodeset` has a method
+# `majority` that tests whether a `nodeset` is a majority of
+# `node`. It comes with a theorem `majorities_intersect` which says
+# that any two majorities have a node in common.
+
+module multi_paxos_abstract(node,value_t) = {
+
+    
+
+        # The protocol model is purely ghost code -- it is not intended to be run in production.
+        # Thus, we wrap it in a specification section.
+
+        specification {
+
+            # The protocol is modeled using the following collection of
+            # relations to represent its abstract state:
+            #
+            # `left_round(N,R)`: node `N` has promised not to accept any proposals in round `R`.
+            # `prepared(I,R)`: round `R` has been prepared.
+            # `propose(I,R,N)`: value `V` has been proposed in round `R`.
+            # `accept(I,N,R,V)`: node `N` has accepted value `V` in round `R`.
+            # `learn(I,V)`: value `V` has been learned (i.e., it is known to be decided)
+
+
+            relation left_round(N:node, R:round_t)
+            relation prepared(I:instance_t,R:round_t)
+            relation propose(I:instance_t, R:round_t, V:value_t)
+            relation accept(I:instance_t, N:node, R:round_t, V:value_t)
+            relation learn(I:instance_t, V:value_t)
+
+            # Note a round is 'prepared' if a majority of acceptors has
+            # responded to a `prepare` request in the round `R` and these
+            # responses have been seen by the proposer.
+
+            # We wish to prove the invariant that no two distinct values
+            # are learned (i.e., consistency).
+
+            invariant [agreement] learn(I,V1) & learn(I,V2) -> V1 = V2
+
+            # This is the initial state of the protocol.
+
+            after init {
+                left_round(N,R) := false;
+                prepared(I,R) := false;
+                propose(I,R,V) := false;
+                accept(I,N,R,V) := false;
+                learn(I,V) := false;
+            }
+
+
+            # This abstract action corresponds to an acceptor receiving a
+            # prepare message and promising not to accept any more
+            # proposals in earlier rounds.
+
+            action handle_prepare(n:node, r:round_t) = {
+                require ~left_round(n,r);
+                left_round(n,R) := true if R < r else left_round(n,R);
+            }
+
+            # This abstract action corresponds to a proposer receveiving `prepared` messages from a majority
+            # of acceptors. The parameters are:
+            #
+            # - i : the instance number
+            # - r: the number of the new round being created
+            # - q : the majority (quorum) of acceptors that are use to create the round
+            # - vt : the highest-round vote in the quorum
+            # - choice: the value choice of the proposer
+
+            action handle_prepared(i : instance_t, r:round_t, q:nset, vt:vote_t, choice:value_t) =
+            {
+                debug "handle_prepared" with round = r, quorum = q, vote = vt, choice = choice, inst = i;
+
+                # Preconditions:
+                # - quorum `q` must be a majority
+                # - round `r` must not be prepared (we will prepare it)
+                # - all nodes in the quorum have left the previous rounds
+                # - the given vote `vt` has been accepted
+                # - vote `vt` has the highest round among all votes of the quorum in rounds less than `r`
+
+                require q.majority; 
+                require ~prepared(i,r);      
+                require R < r -> forall N:node. nset.member(N, q) -> left_round(N,R);
+                require vt.accepted -> accept(i,vt.src,vt.round,vt.value);
+                require R < r & nset.member(N,q) & accept(i,N,R,V) -> vt.accepted & vt.round >= R;
+
+                # If all these conditions hold, we can prepare the round. 
+                # The latest proposal possibly accepted by the quorum must
+                # be re-proposed. If there is none, the proposer proposes
+                # its own choice.
+
+                prepared(i,r) := true;
+                var proposal := vt.value if vt.accepted else choice;
+                propose(i,r,proposal) := true;
+            }
+
+            # This abstract action corresponds to an acceptor receiving a
+            # proposal in a given round, if it has not left the round.
+
+            action handle_proposal(i:instance_t, n:node, r:round_t, v:value_t) = {
+                require ~left_round(n,r);
+                require propose(i, r, v);
+                accept(i, n, r, v) := true
+            }
+
+            # This abstract action corresponds to the learner observing a
+            # quorum that has accepted a prosal in a given round. The
+            # value is learned.
+
+            action handle_accept(i:instance_t, n:node, r:round_t, v:value_t, q:nset) = {
+                require nset.majority(q);
+                require nset.member(N, q) -> accept(i, N, r, v);
+                learn(i,v) := true;
+            }
+
+            # Here are the auxiliary invariants needed in the proof.
+
+            # propose only in prepared rounds
+            invariant propose(I,R,V) -> prepared(I,R)
+
+            # proposes are unique per round
+            invariant propose(I,R,V1) & propose(I,R,V2) -> V1 = V2
+
+            # only accept for proposed values
+            invariant accept(I,N,R,V) -> propose(I,R,V)
+
+            # left-round is downward closed
+            invariant left_round(N,R) & R1 < R -> left_round(N,R)
+
+            # a learned value has a quorum that accepted it in some round:
+            invariant learn(I,V) -> exists Q, R . nset.majority(Q) & forall N:node. nset.member(N, Q) -> accept(I,N,R,V)
+
+            # A value V can possibly be learned in a round R1 if there is a quorum in which every member
+            # has either accepted V in R1 or has not promised to leave R1 (so it might accept V in the future).
+            # If V *might* be accepted in round R1, then we cannot propose any other value in a later round R2,
+            # since this might lead to inconsistency. 
+
+            invariant nset.majority(Q)
+                      & (forall N:node. nset.member(N,Q) -> ~left_round(N,R1) | accept(I,N,R1,V1))
+                      & R1 < R2
+                         -> ~(propose(I,R2,V2) & V1 ~= V2)        
+        }
+    isolate iso=this with nset, nset.majorities_intersect, round_t    # This tells Ivy to use certain specs in the proof of the above invariants
+}
+# export protocol.handle_prepare
+# export protocol.handle_prepared
+# export protocol.handle_proposal
+# export protocol.handle_accept
