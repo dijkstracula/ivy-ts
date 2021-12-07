@@ -29,8 +29,8 @@ module tablet = {
 
     # Lookup operations
 
-    action get_match(tmp: tuple_template) returns (ret: option[tuple])
-    action get_exact(tpl: tuple) returns (ret: option[tuple])
+    action get_match(tmp: tuple_template, ignore_marked: bool) returns (ret: option[tuple])
+    action get_exact(tpl: tuple, ignore_marked: bool) returns (ret: option[tuple])
 
     # TODO: a get_all for failover?
 
@@ -51,16 +51,18 @@ module tablet = {
     # TODO: in a 2PC protocol, can we ever have ok=false?
     action sweep(tpl: tuple) returns (ok: bool)
 
-    # unmark cancels all marks received from some node on a tuple.  When a new
-    # view is received, if any nodes have gone down that have marked tuples, we
-    # need to ensure those are rolled back.  We also use this to undo the first
-    # phase of the two-phase remove protocol if a conflict is found.
-    action unmark(marker: node)
+    # unmark cancels a marks received from some node on a tuple, and unmark_all
+    # unmarks all tuples for a given node.  When a new view is received, if any
+    # nodes have gone down that have marked tuples, we need to ensure those are
+    # rolled back.  We also use these to undo the first phase of the two-phase
+    # remove protocol if a conflict is found.
+    action unmark(marker: node, tpl: tuple) returns (ok: bool)
+    action unmark_all(marker: node)
 
     implementation {
 
         implement get_exact {
-            debug "tablet.get_exact" with self=self, tpl=tpl;
+            debug "tablet.get_exact" with self=self, tpl=tpl, ignore_marked=ignore_marked;
             
             var key : row;
             key.contents := tpl;
@@ -94,7 +96,7 @@ module tablet = {
                 # If all the components of the template have values, then we
                 # can trivially turn this into a tuple and then call
                 # get_exact() for a direct lookup.
-                ret := get_exact(prefix);
+                ret := get_exact(prefix, ignore_marked);
             } else {
                 var e := tupleset.end();
 
@@ -182,6 +184,30 @@ module tablet = {
 
         implement unmark {
             debug "tablet.unmark" with self=self, marker=marker;
+
+            ok := false;
+
+            var key : row;
+            key.contents := tpl;
+            if tupleset.member(key) {
+                var it := tupleset.lub(row.iter.create(key));
+                var r := it.value();
+
+                ok := ~r.mark.is_empty & r.mark.contents = marker;
+                if ok {
+                    # We're good to claim this row as ours to mark.
+                    r.mark := option[node].empty;
+                    ok := true;
+
+                    # Iterators return values by value, not by pointer; argh!!
+                    tupleset.erase(it, tupleset.next(it));
+                    tupleset.insert(r);
+                }
+            }
+        }
+
+        implement unmark_all {
+            debug "tablet.unmark_all" with self=self, marker=marker;
             var it := tupleset.begin();
             var e := tupleset.end();
 
@@ -195,6 +221,10 @@ module tablet = {
                     # Iterators return values by value, not by pointer; argh!!
                     tupleset.erase(it, tupleset.next(it));
                     tupleset.insert(tpl);
+
+
+                    it := tupleset.lub(row.iter.create(tpl));
+                    debug "NBT: unmark" with tpl=it.value();
                 }
                 it := tupleset.next(it);
             }

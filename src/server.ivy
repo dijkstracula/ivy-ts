@@ -157,7 +157,9 @@ process server(self: node) = {
         }
 
         implement remove {
-            var materialised : option[tuple] := tuples.get_match(tpl);
+            # To avoid racing on an already-marked tuple, set ignore_marked
+            # to true.
+            var materialised : option[tuple] := tuples.get_match(tpl, true);
             if materialised.is_empty {
                 # If there's nothing we can extract that matches the template,
                 # then NACK back to the client.
@@ -172,7 +174,10 @@ process server(self: node) = {
         }
 
         implement read {
-            ret := tuples.get_match(tpl);
+            # Since our commit point for removals is after marking, we are okay
+            # to still concurrently read marked tuples, so set ignore_marked to
+            # false.
+            ret := tuples.get_match(tpl, false);
         }
 
         #######################################################################
@@ -298,13 +303,13 @@ process server(self: node) = {
             debug "undo_mark_req.handle" with self=self, msg=msg;
 
             # 1) Perform the local unmark.
-            tuples.unmark(msg.src);
+            var ok := tuples.unmark(msg.src, msg.tpl);
 
             # 2) Reply with a `undo_mark_resp`.
             var resp: undo_mark_resp;
             resp.src := self;
             resp.tpl := msg.tpl;
-            resp.ok := true; #TODO: I think this is ok.
+            resp.ok := ok;
             unicast(resp, msg.src);
         }
 
