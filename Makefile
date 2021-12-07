@@ -23,7 +23,7 @@ $(SRCDIR)$(EXE): $(addprefix $(SRCDIR), $(SRCS))
 	cd $(SRCDIR); $(CC) $(CFLAGS) $(notdir $<)
 
 test: build
-	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE) #| sed -e '/{/,/}$$/ d'
+	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE) | sed -e '/{/,/}$$/ d'
 
 bmc:
 	cd $(SRCDIR); $(CHK) $(CHKFLAGS) tablet.ivy

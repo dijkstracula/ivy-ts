@@ -49,7 +49,7 @@ module tablet = {
     # sweep physically removes the tuple from the store; the removal protocol
     # necessitates that the removing node previously was marked for removal.
     # TODO: in a 2PC protocol, can we ever have ok=false?
-    action sweep(tpl: tuple) returns (ok: bool)
+    action sweep(tpl: tuple, marker: node) returns (ok: bool)
 
     # unmark cancels a marks received from some node on a tuple, and unmark_all
     # unmarks all tuples for a given node.  When a new view is received, if any
@@ -149,20 +149,13 @@ module tablet = {
 
                 if to_be_marked.mark.is_empty() {
                     # We're good to claim this row as ours to mark.
-                    to_be_marked.mark := option[node].just(self);
+                    to_be_marked.mark := option[node].just(marker);
                     ok := true;
 
                     # Iterators return values by value, not by pointer; argh!!
                     tupleset.erase(it, tupleset.next(it));
                     tupleset.insert(to_be_marked);
                 }
-            } 
-            # If ok is false at this point, either:
-            # 1) the tuple doesn't exist in our tupleset (perhaps because we are
-            # very far behind a write);
-            else {
-                debug "marking node is behind an insert: inserting" with self=self, tpl=tpl;
-                var ignored := add_tuple(tpl);
             }
 
             # 2) a concurrent remover has already marked this node for removal.
@@ -170,20 +163,19 @@ module tablet = {
         }
 
         implement sweep {
-            debug "tablet.sweep" with self=self, tpl=tpl;
+            debug "tablet.sweep" with self=self, tpl=tpl, marker=marker;
             ok := false;
 
             var key : row;
             key.contents := tpl;
-            if tupleset.member(key) {
-                var it := tupleset.lub(row.iter.create(key));
-                var r := it.value();
+            assert tupleset.member(key);
 
-                ok := ~r.mark.is_empty;
-                if ok {
-                    tupleset.erase(it, tupleset.next(it));
-                }
-            }
+            var it := tupleset.lub(row.iter.create(key));
+            var r := it.value();
+            
+            ok := ~r.mark.is_empty & r.mark.contents=marker;
+            #require ok;
+            tupleset.erase(it, tupleset.next(it));
         }
 
         implement unmark {
@@ -245,9 +237,9 @@ module tablet = {
             require it ~= tupleset.end();
             var r := it.value();
 
-            # The row must be marked for sweeping.
-            debug "NBT" with r=r;
+            # The row must be marked by the right node for sweeping.
             require ~r.mark.is_empty;
+            require r.mark.contents = marker;
         }
     }
 }

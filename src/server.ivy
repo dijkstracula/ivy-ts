@@ -343,7 +343,7 @@ process server(self: node) = {
             debug "delete_req.handle" with self=self, msg=msg;
             # 1) Perform the local delete, ensuring that we have marked the
             # tuple for deletion.
-            var ok := tuples.sweep(msg.tpl);
+            var ok := tuples.sweep(msg.tpl, msg.src);
             stored(self, msg.tpl) := false;
 
             # 2) Reply with a `delete_resp`.
@@ -482,3 +482,9 @@ process server(self: node) = {
 
 axiom forall H0,H1. ~(server(H0).sock.id = server(H1).sock.id & H0 ~= H1)
 attribute method=bmc[10]
+
+# To mimic the "predomently-read only" workload, reduce the number of inserts
+# and removes.  (The system works fine without doing this but in my head this
+# creates a more plausable-looking execution trace, since with all actions
+# being of equal probability, most random reads end up being NACKs...)
+attribute server.remove.weight = "0.25"
