@@ -8,7 +8,7 @@ include order
 include network
 include timeout
 
-include multi_paxos
+include manager
 include tablet
 include utils
 
@@ -536,75 +536,7 @@ process server(self: server_id) = {
     }
 }
 
-process manager(self: manager_id) = {
-    var view : nat                      # The current view number
-    var time : nat                      # The current time in seconds
-    var heard(X:server_id) : nat        # Last time we head from server `X`
-    var cur_servers : vector[server_id] # 
-    var proposed : bool                 # Have we proposed a new view?
-
-    export action is_down # When the failure detector detects a node has parted
-
-    common {
-        parameter fail_time : nat = 20
-        instance opt_man_msg : option(man_msg_t)
-    }
-
-    instance sock : man_net.socket
-    instance timer : timeout_sec
-    instance paxos : multi_paxos(manager_id, opt_man_msg, opt_man_msg.empty) 
-
-    implementation {
-
-        # current_view 
-        # 
-        after init {
-            view := 0;
-            time := 0;
-            proposed := false;
-
-            for it, i in server_id.iter {
-                cur_servers := cur_servers.append(i);
-            }
-        }
-
-        function is_up(S:server_id) = time <= heard(S) + fail_time
-
-        action announce(view:nat, cur_servers:vector[server_id]) = {
-            if ~proposed {
-                var msg : man_msg_t;
-                msg.view := view;
-                msg.cur_servers := cur_servers;
-                paxos.server.propose(manager.opt_man_msg.just(msg));
-                proposed := true;
-            }
-        }
-
-        implement paxos.server.decide(inst: paxos.instance_t, op: opt_man_msg) {
-            proposed := false;
-            if ~op.is_empty {
-                broadcast(op.contents); # send out the view
-            }
-        }
-
-        action broadcast(msg:man_msg_t) = {
-            view := view.next;
-            msg.view := view;
-            for it, sv in server_id.iter {
-                sock.send(server(sv).man_sock.id, msg);
-                # TODO: this may all have to go in the same file since I'm not sure
-                # if Ivy will recognize what `server` is 
-            }
-        }
-
-        implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
-            if msg.view = view {
-                heard(msg.server_src) := time
-            }
-        }
-    }
-}
-
+instantiate manager_mod
 
 axiom forall H0,H1. ~(server(H0).sock.id = server(H1).sock.id & H0 ~= H1)
 attribute method=bmc[10]
