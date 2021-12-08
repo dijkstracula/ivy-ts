@@ -153,6 +153,7 @@ process server(self: server_id) = {
     # that this then relates to specifically the server_ids in the current
     # view.
     instance acks : ordered_set(server_id)
+    # TODO: ack_count might be deprecated now that we have a view comparison action
     var ack_count : nat # explicit counter since ordered_set doesn't expose a size()
 
     # Are we undoing some marking operations?
@@ -227,18 +228,13 @@ process server(self: server_id) = {
             sock.send(server(dst_id).sock.id,outgoing);
         }
 
-        action multicast(outgoing: msg_t, b: server_id.iter.t, e: server_id.iter.t) = {
-            var it := b;
+        action broadcast(outgoing: msg_t) = {
+            var it := view.begin();
+            var e := view.end();
             while it ~= e {
                 unicast(outgoing, it.value());
-                it := it.next();
+                it := view.next(it);
             }
-        }
-
-        action broadcast(outgoing: msg_t) = {
-            var b := view.begin();
-            var e := view.end();
-            multicast(outgoing, b, e);
         }
 
 
@@ -269,7 +265,7 @@ process server(self: server_id) = {
             acks.insert(msg.src);
             ack_count := ack_count + 1;
 
-            if ack_count = cast(server_id.max) + 1 {
+            if commit_reached {
                 debug "NBT: store_resp" with ac=ack_count, nm=server_id.max;
                 # Have we received a resp from all server_ids?  If so, commit.
                 acks.erase(acks.begin(), acks.end());
@@ -316,7 +312,8 @@ process server(self: server_id) = {
                     acks.insert(msg.src);
                     ack_count := ack_count + 1;
 
-                    if ack_count = cast(server_id.max) + 1 {
+                    if commit_reached {
+                    #if ack_count = cast(server_id.max) + 1 {
                         debug "Marking complete" with self=self, tpl=msg.tpl;
                         acks.erase(acks.begin(), acks.end());
                         ack_count := 0;
@@ -355,7 +352,7 @@ process server(self: server_id) = {
 
                 # Have all the server_ids responded back saying they've unmarked?
                 # If so, we can tell the client to retry.
-                if ack_count = cast(server_id.max) + 1 {
+                if commit_reached {
                     debug "Rollback complete" with self=self, tpl=msg.tpl;
                     rolling_back := false;
                     acks.erase(acks.begin(), acks.end());
@@ -395,7 +392,7 @@ process server(self: server_id) = {
 
                 # Have we received a successful resp from all server_ids?  If so, return
                 # the tuple to the client and unblock them.
-                if ack_count = cast(server_id.max) + 1 {
+                if commit_reached {
                     acks.erase(acks.begin(), acks.end());
                     ack_count := 0;
 
@@ -403,6 +400,25 @@ process server(self: server_id) = {
                 }
             }
         }
+
+        # If we've reached the commit point, then the set of nodes we've heard
+        # back from needs to be an improper superset of the current view.
+        # (If no view changes have happened, then the sets will be equal.)
+        action commit_reached returns (ret: bool) = {
+            var vi := view.begin();
+            var ve := view.end();
+
+            ret := true;
+            while ret & vi ~= ve {
+                var val := vi.value();
+                if ~acks.member(val) {
+                    ret := false; 
+                }
+
+                vi := view.next(vi);
+            }
+        }
+
     }
 
     ###########################################################################
@@ -597,7 +613,7 @@ attribute method=bmc[10]
 # and removes.  (The system works fine without doing this but in my head this
 # creates a more plausable-looking execution trace, since with all actions
 # being of equal probability, most random reads end up being NACKs...)
-attribute server.remove.weight = "0.25"
+attribute server.remove.weight = "0.33"
 
 # Topology changes should be very infrequent just so we spread the events out
 # through the test run.
