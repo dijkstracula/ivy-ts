@@ -7,12 +7,14 @@ include collections
 
 global {
 
-    instance node : iterable
+    instance server_id : iterable
+    
+    instance manager_id : iterable
 
     type elem
     interpret elem -> bv[3]
 
-    # A tuple type is the data structure laid out in tablets in storage nodes.
+    # A tuple type is the data structure laid out in tablets in storage server_ids.
     # These are returned to clients on lookup operations.
     instance tuple : vector(elem)
 

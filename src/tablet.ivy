@@ -17,7 +17,7 @@ class row = {
     alias t = this
 
     field contents : tuple
-    field mark: option[node] 
+    field mark: option[server_id] 
 
     instance iter : order_iterator(this)
 }
@@ -42,22 +42,22 @@ module tablet = {
 
     # Mark and sweep operations
 
-    # mark indicates that a given node has "locked" a given tuple to later
+    # mark indicates that a given server_id has "locked" a given tuple to later
     # be removed.
-    action mark(tpl: tuple, marker: node) returns (ok: bool)
+    action mark(tpl: tuple, marker: server_id) returns (ok: bool)
 
     # sweep physically removes the tuple from the store; the removal protocol
-    # necessitates that the removing node previously was marked for removal.
+    # necessitates that the removing server_id previously was marked for removal.
     # TODO: in a 2PC protocol, can we ever have ok=false?
-    action sweep(tpl: tuple, marker: node) returns (ok: bool)
+    action sweep(tpl: tuple, marker: server_id) returns (ok: bool)
 
-    # unmark cancels a marks received from some node on a tuple, and unmark_all
-    # unmarks all tuples for a given node.  When a new view is received, if any
+    # unmark cancels a marks received from some server_id on a tuple, and unmark_all
+    # unmarks all tuples for a given server_id.  When a new view is received, if any
     # nodes have gone down that have marked tuples, we need to ensure those are
     # rolled back.  We also use these to undo the first phase of the two-phase
     # remove protocol if a conflict is found.
-    action unmark(marker: node, tpl: tuple) returns (ok: bool)
-    action unmark_all(marker: node)
+    action unmark(marker: server_id, tpl: tuple) returns (ok: bool)
+    action unmark_all(marker: server_id)
 
     implementation {
 
@@ -126,7 +126,7 @@ module tablet = {
 
             var r : row;
             r.contents := tpl;
-            r.mark := option[node].empty;
+            r.mark := option[server_id].empty;
 
             already_present := tupleset.member(r);
             if ~already_present {
@@ -149,7 +149,7 @@ module tablet = {
 
                 if to_be_marked.mark.is_empty() {
                     # We're good to claim this row as ours to mark.
-                    to_be_marked.mark := option[node].just(marker);
+                    to_be_marked.mark := option[server_id].just(marker);
                     ok := true;
 
                     # Iterators return values by value, not by pointer; argh!!
@@ -158,7 +158,7 @@ module tablet = {
                 }
             }
 
-            # 2) a concurrent remover has already marked this node for removal.
+            # 2) a concurrent remover has already marked this server_id for removal.
             # In either case, the caller needs to retry.
         }
 
@@ -192,7 +192,7 @@ module tablet = {
                 ok := ~r.mark.is_empty & r.mark.contents = marker;
                 if ok {
                     # We're good to claim this row as ours to mark.
-                    r.mark := option[node].empty;
+                    r.mark := option[server_id].empty;
                     ok := true;
 
                     # Iterators return values by value, not by pointer; argh!!
@@ -207,12 +207,12 @@ module tablet = {
             var it := tupleset.begin();
             var e := tupleset.end();
 
-            # We could avoid a full table scan by storing per-node delete
+            # We could avoid a full table scan by storing per-server_id delete
             # lists, but, this is fine for a prototype.
             while it ~= e {
                 var tpl := it.value();
                 if ~tpl.mark.is_empty() & tpl.mark.contents() = marker {
-                    tpl.mark := option[node].empty;
+                    tpl.mark := option[server_id].empty;
 
                     # Iterators return values by value, not by pointer; argh!!
                     tupleset.erase(it, tupleset.next(it));
@@ -228,7 +228,7 @@ module tablet = {
 
     specification {
         before sweep {
-            # Nobody must have gotten in to sweep out the node before us.
+            # Nobody must have gotten in to sweep out the server_id before us.
             var key : row;
             key.contents := tpl;
             require tupleset.member(key);
@@ -237,7 +237,7 @@ module tablet = {
             require it ~= tupleset.end();
             var r := it.value();
 
-            # The row must be marked by the right node for sweeping.
+            # The row must be marked by the right server_id for sweeping.
             require ~r.mark.is_empty;
             require r.mark.contents = marker;
         }
