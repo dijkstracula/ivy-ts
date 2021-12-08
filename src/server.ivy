@@ -127,6 +127,8 @@ global {
 
 process server(self: server_id) = {
 
+    export action join
+
     export action read(tpl: tuple_template) returns (ret: option[tuple])
 
     export action insert(tpl: tuple)
@@ -137,6 +139,9 @@ process server(self: server_id) = {
     import action insert_resp(ret: tuple)
     import action remove_resp(ret: option[tuple])
 
+
+    # Has this node joined
+    var active : bool
 
     # For the current in-flight operation, how many have we heard back from?
     #
@@ -161,8 +166,13 @@ process server(self: server_id) = {
         # The overlay network for server <-> manager interaction.
         instance man_sock : man_net.socket
 
-        implement insert {
+        after init {
+            # TODO: the manager will give us the initial view, which could
+            # very well be [0,1,2].
+            active := self <= 2;
+        }
 
+        implement insert {
             var msg: store_req;
             msg.src := self;
             msg.tpl := tpl;
@@ -275,7 +285,6 @@ process server(self: server_id) = {
             resp.ok := ok;
             unicast(resp, msg.src);
         }
-
         implement mark_resp.handle {
             debug "mark_resp.handle" with self=self, msg=msg, rb=rolling_back, ac=ack_count;
             if ~rolling_back {
@@ -409,6 +418,10 @@ process server(self: server_id) = {
             relation inserting(N: server_id)
             relation removing(N: server_id)
 
+            # Only nodes that believe themselves to be part of the tuplespace
+            # should ever be issuing client requests.
+            #invariant ~active(N) -> ~client_operating(N)
+
             # The only blocking operations we allow are inserts and removes,
             # and we can only be doing one at a time.
             invariant client_operating(N) <-> inserting(N) | removing(N)
@@ -463,19 +476,26 @@ process server(self: server_id) = {
             }
         }
 
+        before join {
+            require ~active;
+        }
+
         # Ensure sequential operations on a given server_id.
         # (TODO: maybe this is better moved into a `client` isolate?)
         before read {
+            require active;
             require tpl.end > 0; # Don't try to read the empty tuple.
             require ~client_operating(self);
         }
         before insert {
+            require active;
             require ~client_operating(self);
             require tpl.end > 0; # Don't try to insert the empty tuple.
             client_operating(self) := true;
             inserting(self) := true;
         }
         before remove {
+            require active;
             require ~client_operating(self);
             require tpl.end > 0; # Don't try to remove the empty tuple.
             client_operating(self) := true;
@@ -499,7 +519,7 @@ process manager(self: manager_id) = {
     var cur_servers : vector[server_id] # 
     var proposed : bool                 # Have we proposed a new view?
 
-    export action is_down # keeping track of all servers
+    export action is_down # When the failure detector detects a node has parted
 
     common {
         parameter fail_time : nat = 20
@@ -570,3 +590,8 @@ attribute method=bmc[10]
 # creates a more plausable-looking execution trace, since with all actions
 # being of equal probability, most random reads end up being NACKs...)
 attribute server.remove.weight = "0.25"
+
+# Topology changes should be very infrequent just so we spread the events out
+# through the test run.
+attribute server.join.weight = "0.01"
+attribute manager.is_down.weight = "0.01"
