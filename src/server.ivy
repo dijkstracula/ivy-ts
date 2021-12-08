@@ -140,14 +140,17 @@ process server(self: server_id) = {
     import action remove_resp(ret: option[tuple])
 
 
-    # Has this node joined
+    # Has this node joined the tuplespace?
     var active : bool
+
+    # The servers that the node believes is part of the tuplespace.
+    instance view: ordered_set(server_id)
 
     # For the current in-flight operation, how many have we heard back from?
     #
-    # TODO: at the moment, our commit point is when we've heard from
-    # all server_ids, though when we thread the manager in we'll need to make
-    # sure that this then relates to specifically the server_ids in the current
+    # TODO: at the moment, our commit point is when we've heard from all nodes
+    # in the view, though when we thread the manager in we'll need to make sure
+    # that this then relates to specifically the server_ids in the current
     # view.
     instance acks : ordered_set(server_id)
     var ack_count : nat # explicit counter since ordered_set doesn't expose a size()
@@ -167,9 +170,14 @@ process server(self: server_id) = {
         instance man_sock : man_net.socket
 
         after init {
-            # TODO: the manager will give us the initial view, which could
-            # very well be [0,1,2].
-            active := self <= 2;
+            # TODO: the manager will give us the initial view, which could very
+            # well be [0,1,2].  Maybe it's easier for the initial view to be
+            # coordinated manually between the servers and the manager?
+            view.insert(0);
+            view.insert(1);
+            view.insert(2);
+
+            active := (view.member(self));
         }
 
         implement insert {
@@ -228,8 +236,8 @@ process server(self: server_id) = {
         }
 
         action broadcast(outgoing: msg_t) = {
-            var b := server_id.iter.begin();
-            var e := server_id.iter.end();
+            var b := view.begin();
+            var e := view.end();
             multicast(outgoing, b, e);
         }
 
