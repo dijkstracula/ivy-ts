@@ -113,6 +113,22 @@ global {
         action handle(self: server_id, ^msg: delete_resp)
     }
 
+    # A replicate is an internal operation where a nascent node requests
+    # from another node the contents of its tuplespace.
+
+    subclass replicate_req of msg_t = {
+        field src : server_id
+
+        action handle(self: server_id, ^msg: replicate_req)
+    }
+
+    subclass replicate_resp of msg_t = {
+        field is_active : bool # False if we sent this to a node that has parted
+        field tuples : vector[tuple] # the full contents of the node's tablet
+
+        action handle(self: server_id, ^msg: replicate_resp)
+    }
+
 
     instance net : tcp.net(msg_t)
 }
@@ -137,6 +153,14 @@ process server(self: server_id) = {
 
     # Has this node joined the tuplespace?
     var active : bool
+
+    # Is this node in the process of faulting in its tuples from another 
+    # node? 
+    # TODO: Not sure exactly what the semantics should be here, yet: should it
+    # be the case that we can be active but also replicating (in which case we
+    # need to enqueue operations to do?)  I think this is true, but need to
+    # meditate on that some more.
+    var replicating : bool
 
     # The servers that the node believes is part of the tuplespace.
     instance view: ordered_set(server_id)
@@ -308,7 +332,6 @@ process server(self: server_id) = {
                     ack_count := ack_count + 1;
 
                     if commit_reached {
-                    #if ack_count = cast(server_id.max) + 1 {
                         debug "Marking complete" with self=self, tpl=msg.tpl;
                         acks.erase(acks.begin(), acks.end());
                         ack_count := 0;
@@ -396,21 +419,32 @@ process server(self: server_id) = {
             }
         }
 
-        # If we've reached the commit point, then the set of nodes we've heard
-        # back from needs to be an improper superset of the current view.
-        # (If no view changes have happened, then the sets will be equal.)
+        implement replicate_req.handle {
+            # 
+        }
+
+        implement replicate_resp.handle {
+
+        }
+
+        # The commit point for inserts and removals is once we've heard back
+        # from all servers in our view.  If we've reached the commit point,
+        # then the set of nodes we've heard back from needs to be an improper
+        # superset of the current view.  (If no view changes have happened,
+        # then the sets will be equal. However, it is possible that dead nodes
+        # that we've gotten ACKs from might be removed from the view.)
         action commit_reached returns (ret: bool) = {
-            var vi := view.begin();
-            var ve := view.end();
+            var it := view.begin();
+            var e := view.end();
 
             ret := true;
-            while ret & vi ~= ve {
-                var val := vi.value();
+            while ret & it ~= e {
+                var val := it.value();
                 if ~acks.member(val) {
                     ret := false; 
                 }
 
-                vi := view.next(vi);
+                it := view.next(it);
             }
         }
 
