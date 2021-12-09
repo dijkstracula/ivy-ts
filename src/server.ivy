@@ -471,7 +471,7 @@ process server(self: server_id) = {
                     # If we return anything, it must be present somewhere in
                     # the tuplespace.  It's ok if it's not stored everywhere,
                     # since a read may be concurrent with an insert or removal.
-                    require(exists N. stored(N, ret.contents));
+                    require(exists N. server(N).active -> stored(N, ret.contents));
                 }
             }
 
@@ -479,7 +479,14 @@ process server(self: server_id) = {
                 require inserting(self);
                 inserting(self) := false;
 
-                # TODO
+                # Not sure that this is the best way to write this
+                # specification, but the intention is that in the presence of a
+                # concurrent insert and remove, either the insert completed on
+                # all nodes (serialising the two concurrent operations as
+                # remove -> insert), or it failed completely (serialising as
+                # insert -> remove).
+                require (server(N).active -> stored(N, ret)) |
+                        (server(N).active -> ~stored(N, ret));
 
                 call unblock_client(self);
             }
@@ -488,13 +495,16 @@ process server(self: server_id) = {
                 require removing(self);
                 removing(self) := false;
 
-                # TODO: I think this is slightly wrong: how does this behave
-                # with concurrent inserts of the same tuple?
                 if ~ret.is_empty {
-                    # If we return anything, it must have been extracted
-                    # completely from the tuplespace.
-                    #require(~stored(N, ret.contents));
-                }
+                    # Similarly to the above: If we return anything, it must
+                    # have been extracted completely from the tuplespace, or,
+                    # if concurrent with an insert, that remove must not have
+                    # happened on any node.  The lhs indicates that the remove
+                    # would be serialised second, and the rhs that the insert
+                    # was.
+                    require (server(N).active -> stored(N, ret.contents)) |
+                            (server(N).active -> ~stored(N, ret.contents));
+                    }
 
                 call unblock_client(self);
             }
@@ -541,10 +551,12 @@ instantiate manager_mod
 axiom forall H0,H1. ~(server(H0).sock.id = server(H1).sock.id & H0 ~= H1)
 attribute method=bmc[10]
 
-# To mimic the "predomently-read only" workload, reduce the number of inserts
-# and removes.  (The system works fine without doing this but in my head this
-# creates a more plausable-looking execution trace, since with all actions
-# being of equal probability, most random reads end up being NACKs...)
+# To mimic the "predomently-read only" workload, reduce the number of removes
+# and increase the number of reads.  (The system works fine without doing this
+# but in my head this creates a more plausable-looking execution trace, since
+# with all actions being of equal probability, most random reads end up being
+# NACKs...)
+attribute server.read.weight = "3"
 attribute server.remove.weight = "0.33"
 
 # Topology changes should be very infrequent just so we spread the events out
