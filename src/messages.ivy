@@ -100,20 +100,50 @@ module server_rpc = {
         action handle(self: server_id, ^msg: delete_resp)
     }
 
-    # A replicate is an internal operation where a nascent node requests
+    # A replicate is an internal operation where a nascent node is sent
     # from another node the contents of its tuplespace.
+
+
+    # Informs a server that the manager would like it to bootstrap a new node.
+    # This will require parking all actions, replicating, then unparking.
+    subclass bootstrap_msg_t of msg_t = {
+        field manager_src : manager_id
+        field new_server : server_id
+
+        action handle(self: server_id, ^msg: bootstrap_msg_t)
+    }
 
     subclass replicate_req of msg_t = {
         field src : server_id
+        field tuples : vector[tuple] # the full contents of the node's tablet
 
         action handle(self: server_id, ^msg: replicate_req)
     }
 
     subclass replicate_resp of msg_t = {
-        field is_active : bool # False if we sent this to a node that has parted
-        field tuples : vector[tuple] # the full contents of the node's tablet
+        field unused : bool # False if we sent this to a node that has parted
 
         action handle(self: server_id, ^msg: replicate_resp)
+    }
+
+    # A park message suspends any new messages from being processed.  After all
+    # responses come back to the manager, we know the set of servers are quiesecent,
+    # and can perform non-local updates like consistent node bootstrapping.
+
+    subclass park_req of msg_t = {
+        field src: server_id
+        field to_bootstrap: server_id
+        action handle(self: server_id, ^msg: park_req)
+    }
+    subclass park_resp of msg_t = {
+        field src: server_id
+        field to_bootstrap: server_id
+        action handle(self: server_id, ^msg: park_resp)
+    }
+
+    subclass unpark of msg_t = {
+        field src: server_id
+        action handle(self: server_id, ^msg: unpark)
     }
 
 
@@ -131,6 +161,15 @@ module manager_rpc = {
         field cur_servers : vector[server_id] # For view updates, current servers in view
 
         action handle(self: server_id, ^msg: view_msg)
+    }
+
+    ##########
+
+    # For a node announcing its presence to the manager.
+    subclass join_msg_t of man_msg_t = {
+        field src : server_id # who is joining the party?
+
+        action handle(self: manager_id, ^msg: join_msg_t)
     }
 
 }

@@ -17,27 +17,17 @@ New nodes may join the tuplespace by making their presence known to the
 manager, who will add them a new view and inform all servers of that node's
 presences.
 
-When a new server spins up, it needs to bootstrap its copy of the tuplespace
-from an existing server.  It'll choose one in the view and have it replicate
-its tablet over (retrying if that node in the view is, itself, getting data
-replicated over too).  The problem is this:  other nodes, which may have no
-idea yet of the new server, may be concurrently mutating the tablet.
+Before that node can start participating, however, it needs an up-to-date copy
+of all tuples in the tuplespace.  This will be bulk-transferred from another
+node chosen by the manager; however, we need to ensure that no mutations make
+the in-transit copy of the tuplespace invalid while it is being transferred.
+We take a heavy-hammer approach here: The manager will ask all nodes to _park_
+any asynchronous operations: local reads may still be served, but inserts and
+removes must be delayed until the node is bootstrapped at the expense of tail
+latencies.
 
-We can know that the new view message has gone out at least.  But, that will be
-over the `man_net` overlay network which can be arbitrarily delayed vs
-insert/delete messages on the other overlay network.  So what happens if:
-
-1) Nascent node asks replicating node for its tuples
-2) Replicating node sends its tuples over
-3) Inserting node broadcasts insert to the replicating node and commits
-4) Inserting node is informed of the new view, but the nascent node is missing the insert
-
-Does insert need to be a 2PC, too?  I don't even know if that's enough:
-consider a tuple removal, where both marking and removal happens in step 3 of
-the above.
-
-Is the thing we want, morally, the tuple snapshot + "snapshot of all in-flight
-messages to that node"?  
-
-Do we need ACKs back on new views?  Or at minimum telling the manager "node 0,
-copy your state over to node n+1"?
+To park a tuplespace server is to drain it of active requests; it will ACK back
+either immediately if no request is in flight, or after that request is
+finished.  When all ACKs come back, the manager knows that the whole network is
+quiescent and may proceed with the bulk transfer.  Upon completion, nodes are
+unparked and asynchronous operations may continue.
