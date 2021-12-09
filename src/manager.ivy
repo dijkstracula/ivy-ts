@@ -3,18 +3,28 @@
 include multi_paxos
 include utils
 
-global {
-
-    class man_msg_t = {
-        field server_src: server_id    # For heartbeats, where did this originate?
-        field view : nat               # For view updates, the view number
-        field cur_servers : vector[server_id] # For view updates, current servers in view
-    }
-
-    instance man_net : tcp_test.net(man_msg_t)
-}
-
 module manager_mod = {
+    global {
+
+        class man_msg_t = {
+            action handle(self: manager_id, ^msg: man_msg_t)
+        }
+
+        subclass heartbeat_msg_t of man_msg_t = {
+            field src: server_id    # For heartbeats, where did this originate?
+            action handle(self: manager_id, ^msg: heartbeat_msg_t)
+        }
+
+        subclass view_msg_t of man_msg_t = {
+            field src: server_id
+            field view : nat               # For view updates, the view number
+            field cur_servers : vector[server_id] # For view updates, current servers in view
+
+            action handle(self: manager_id, ^msg: view_msg_t)
+        }
+
+        instance man_net : tcp_test.net(man_msg_t)
+    }
 
     process manager(self: manager_id) = {
         var view : nat                      # The current view number
@@ -26,13 +36,13 @@ module manager_mod = {
         export action is_down # When the failure detector detects a node has parted
 
         common {
-            parameter fail_time : nat = 20
-            instance opt_man_msg : option(man_msg_t)
+            parameter fail_time : nat = 2
+            instance opt_view_msg : option(view_msg_t)
         }
 
         instance sock : man_net.socket
         instance timer : timeout_sec
-        instance paxos : multi_paxos(manager_id, opt_man_msg, opt_man_msg.empty) 
+        instance paxos : multi_paxos(manager_id, opt_view_msg, opt_view_msg.empty) 
 
         implementation {
 
@@ -52,24 +62,26 @@ module manager_mod = {
 
             action announce(view:nat, cur_servers:vector[server_id]) = {
                 if ~proposed {
-                    var msg : man_msg_t;
+                    var msg : view_msg_t;
                     msg.view := view;
                     msg.cur_servers := cur_servers;
-                    paxos.server.propose(manager.opt_man_msg.just(msg));
+                    paxos.server.propose(manager.opt_view_msg.just(msg));
                     proposed := true;
                 }
             }
 
-            implement paxos.server.decide(inst: paxos.instance_t, op: opt_man_msg) {
+            implement paxos.server.decide(inst: paxos.instance_t, op: opt_view_msg) {
                 proposed := false;
                 if ~op.is_empty {
-                    broadcast(op.contents); # send out the view
+                    view := view.next;
+
+                    var msg : view_msg_t := op.contents;
+                    msg.view := view;
+                    broadcast(msg);
                 }
             }
 
             action broadcast(msg:man_msg_t) = {
-                view := view.next;
-                msg.view := view;
                 for it, sv in server_id.iter {
                     sock.send(server(sv).man_sock.id, msg);
                     # TODO: this may all have to go in the same file since I'm not sure
@@ -78,8 +90,18 @@ module manager_mod = {
             }
 
             implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
+                msg.handle(self);
+            }
+
+            implement heartbeat_msg_t.handle {
+                debug "heartbeat_msg_t.handle" with self=self, msg=msg;
+            }
+
+            implement view_msg_t.handle {
+                debug "view_msg_t.handle" with self=self, msg=msg;
+
                 if msg.view = view {
-                    heard(msg.server_src) := time
+                    heard(msg.src) := time;
                 }
             }
         }

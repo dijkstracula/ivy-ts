@@ -12,6 +12,8 @@ include manager
 include tablet
 include utils
 
+instantiate manager_mod
+
 global {
 
     # All server messages are internal to the tuplespace implementation;
@@ -539,7 +541,6 @@ process server(self: server_id) = {
     }
 }
 
-instantiate manager_mod
 
 axiom forall H0,H1. ~(server(H0).sock.id = server(H1).sock.id & H0 ~= H1)
 attribute method=bmc[10]
