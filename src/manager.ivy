@@ -1,32 +1,19 @@
 #lang ivy1.8
 
+include messages
 include multi_paxos
 include utils
 
 module manager_mod = {
-    global {
-
-        class man_msg_t = {
-            action handle(self: manager_id, ^msg: man_msg_t)
-        }
-
-        subclass heartbeat_msg_t of man_msg_t = {
-            field src: server_id    # For heartbeats, where did this originate?
-            action handle(self: manager_id, ^msg: heartbeat_msg_t)
-        }
-
-        subclass view_msg_t of man_msg_t = {
-            field src: server_id
-            field view : nat               # For view updates, the view number
-            field cur_servers : vector[server_id] # For view updates, current servers in view
-
-            action handle(self: manager_id, ^msg: view_msg_t)
-        }
-
-        instance man_net : tcp_test.net(man_msg_t)
-    }
 
     process manager(self: manager_id) = {
+
+        common {
+            instantiate manager_rpc
+        }
+
+        instance man_net : tcp.net(man_msg_t)
+
         var view : nat                      # The current view number
         var time : nat                      # The current time in seconds
         var heard(X:server_id) : nat        # Last time we head from server `X`
@@ -60,11 +47,10 @@ module manager_mod = {
 
             function is_up(S:server_id) = time <= heard(S) + fail_time
 
-            action announce(view:nat, cur_servers:vector[server_id]) = {
+            action announce(v:nat, cs:vector[server_id]) = {
                 if ~proposed {
                     var msg : view_msg_t;
-                    msg.view := view;
-                    msg.cur_servers := cur_servers;
+                    msg.cur_servers := cs;
                     paxos.server.propose(manager.opt_view_msg.just(msg));
                     proposed := true;
                 }
@@ -93,11 +79,11 @@ module manager_mod = {
                 msg.handle(self);
             }
 
-            implement heartbeat_msg_t.handle {
+            implement heartbeat_msg_t.handle(^msg: heartbeat_msg_t) {
                 debug "heartbeat_msg_t.handle" with self=self, msg=msg;
             }
 
-            implement view_msg_t.handle {
+            implement view_msg_t.handle(^msg: view_msg_t) {
                 debug "view_msg_t.handle" with self=self, msg=msg;
 
                 if msg.view = view {

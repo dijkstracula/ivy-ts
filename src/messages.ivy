@@ -1,0 +1,140 @@
+#lang ivy1.8
+
+include network
+include numbers
+include utils
+
+module server_rpc = {
+    # All server messages are internal to the tuplespace implementation;
+    # clients do not directly send these messages but simply "call into" the
+    # tuplespace with exported actions.
+
+    class msg_t = {
+        # The operation to take when a server_id receives a particular message.
+        action handle(self: server_id, ^msg:msg_t)
+
+        # If the message is part of a larger protocol (such as a req/resp
+        # pair), produce the message that should be returned to the sending
+        # server_id.  Produces an empty return value if no such message need be
+        # sent.  (The caller may still need to fill in certain fields.)
+        # TODO: is this actually useful?  I'm not so sure anymore.
+        # TODO: revisit the nathan/rpc_metaprotocol branch if there's time.
+        # The `andThen` combinator might be what we want here.
+        #action next(self: server_id, ^msg:msg_t) returns (ret: option[msg_t])
+    }
+
+
+    # A store is an internal operation mutates the tuplespace by adding a tuple
+    # to all server_ids in the tuplespace.  For details, see doc/operations.md .
+
+    subclass store_req of msg_t = {
+        field src : server_id
+        field tpl : tuple
+
+        action handle(self: server_id, ^msg: store_req)
+    }
+
+    subclass store_resp of msg_t = {
+        field src : server_id
+        field tpl : tuple
+        field idem : bool # Was this an idempotent write (ie. did this tuple already exist?)
+
+        action handle(self: server_id, ^msg: store_resp)
+    }
+
+    # A mark indicates that a remote server wishes to atomically remove a value
+    # from the tuplestore.  This is phase one of the 2PC protocol.
+
+    subclass mark_req of msg_t = {
+        field src : server_id
+        field tpl : tuple
+
+        action handle(self: server_id, ^msg: mark_req)
+    }
+
+    subclass mark_resp of msg_t = {
+        field src : server_id
+        field tpl : tuple
+        field ok : bool # Did we mark this successfully?
+
+        action handle(self: server_id, ^msg: mark_resp)
+    }
+
+
+    # A mark rollback indicates that a remote server, having previously marked
+    # some tuples during the first phase of a remove operation, would like to
+    # undo those markings.
+
+    subclass undo_mark_req of msg_t = {
+        field src : server_id
+        field tpl : tuple
+
+        action handle(self: server_id, ^msg: undo_mark_req)
+    }
+
+    subclass undo_mark_resp of msg_t = {
+        field src : server_id
+        field tpl : tuple
+        field ok : bool # Did we mark this successfully?
+
+        action handle(self: server_id, ^msg: undo_mark_resp)
+    }
+
+    # A delete is an internal operation structurally similar to a store - it
+    # mutates the tuplespace by removing a marked tuple from the tuplespace.
+    # This is phase two of the 2PC protocol.
+
+    subclass delete_req of msg_t = {
+        field src : server_id
+        field tpl : tuple
+
+        action handle(self: server_id, ^msg: delete_req)
+    }
+
+    subclass delete_resp of msg_t = {
+        field src : server_id
+        field tpl : tuple
+        field idem : bool # Was this an idempotent delete (ie. did this tuple not exist?)
+
+        action handle(self: server_id, ^msg: delete_resp)
+    }
+
+    # A replicate is an internal operation where a nascent node requests
+    # from another node the contents of its tuplespace.
+
+    subclass replicate_req of msg_t = {
+        field src : server_id
+
+        action handle(self: server_id, ^msg: replicate_req)
+    }
+
+    subclass replicate_resp of msg_t = {
+        field is_active : bool # False if we sent this to a node that has parted
+        field tuples : vector[tuple] # the full contents of the node's tablet
+
+        action handle(self: server_id, ^msg: replicate_resp)
+    }
+
+
+}
+
+module manager_rpc = {
+
+    class man_msg_t = {
+        action handle(self: manager_id, ^msg: man_msg_t)
+    }
+
+    subclass heartbeat_msg_t of man_msg_t = {
+        field src: server_id    # For heartbeats, where did this originate?
+        action handle(self: manager_id, ^msg: heartbeat_msg_t)
+    }
+
+    subclass view_msg_t of man_msg_t = {
+        field src: server_id
+        field view : nat               # For view updates, the view number
+        field cur_servers : vector[server_id] # For view updates, current servers in view
+
+        action handle(self: manager_id, ^msg: view_msg_t)
+    }
+
+}

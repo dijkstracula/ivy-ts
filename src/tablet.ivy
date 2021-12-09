@@ -121,6 +121,7 @@ module tablet = {
             }
         }
 
+
         implement add_tuple {
             debug "tablet.add_tuple" with self=self, tpl=tpl;
 
