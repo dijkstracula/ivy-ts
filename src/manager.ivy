@@ -1,5 +1,7 @@
 #lang ivy1.8
 
+include collections
+
 include messages
 include multi_paxos
 include utils
@@ -8,11 +10,6 @@ module manager_mod = {
 
     process manager(self: manager_id) = {
 
-        common {
-            instantiate manager_rpc
-        }
-
-        instance man_net : tcp.net(man_msg_t)
 
         var view : nat                      # The current view number
         var time : nat                      # The current time in seconds
@@ -24,12 +21,15 @@ module manager_mod = {
 
         common {
             parameter fail_time : nat = 2
+            # TODO: The view needs to be more than just the topology.
             instance opt_view_msg : option(view_msg_t)
         }
 
         instance sock : man_net.socket
+        instance server_sock : net.socket
         instance timer : timeout_sec
         instance paxos : multi_paxos(manager_id, opt_view_msg, opt_view_msg.empty) 
+
 
         implementation {
 
@@ -38,11 +38,13 @@ module manager_mod = {
             after init {
                 view := 0;
                 time := 0;
+
                 proposed := false;
 
-                for it, i in server_id.iter {
-                    cur_servers := cur_servers.append(i);
-                }
+                # TODO: for consistency with the initial view in server.ivy
+                cur_servers := cur_servers.append(0);
+                cur_servers := cur_servers.append(1);
+                cur_servers := cur_servers.append(2);
             }
 
             function is_up(S:server_id) = time <= heard(S) + fail_time
@@ -79,17 +81,30 @@ module manager_mod = {
                 msg.handle(self);
             }
 
-            implement heartbeat_msg_t.handle(^msg: heartbeat_msg_t) {
+            implement heartbeat_msg_t.handle(msg: heartbeat_msg_t) {
                 debug "heartbeat_msg_t.handle" with self=self, msg=msg;
             }
 
-            implement view_msg_t.handle(^msg: view_msg_t) {
+            implement view_msg_t.handle(msg: view_msg_t) {
                 debug "view_msg_t.handle" with self=self, msg=msg;
 
                 if msg.view = view {
                     heard(msg.src) := time;
                 }
             }
+
+            implement join_msg_t.handle(msg: join_msg_t) {
+                var dst := cur_servers.get(0); # an "arbitrary" node to replicate over
+
+                debug "join_msg_t.handle" with self=self, msg=msg, dst=dst;
+
+                var m2 : bootstrap_msg_t;
+                m2.manager_src := self;
+                m2.new_server := msg.src;
+
+                server_sock.send(server(dst).sock.id, m2);
+            }
+
         }
     }
 

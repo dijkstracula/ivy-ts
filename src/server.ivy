@@ -1,5 +1,4 @@
 #lang ivy1.8
-
 # A tuplespace server makes up a part of the replicated system.  It can consume
 # API actions from an embedded client or from other server_ids.
 
@@ -12,14 +11,31 @@ include manager
 include tablet
 include utils
 
-instantiate manager_mod
-
-global {
-
-}
 
 ###############################################################################
 
+type active_state_t = {
+    unjoined, # Nascent server, ready to join
+    joining,  # In the process of getting tuplespaces replicated over
+    live,     # Able to accept requests
+    killed    # Failure detector downed it
+}
+
+type parked_state_t = {
+    unparked, # Execution can proceed normally
+    parking,  # Manager has asked us to park; we are waiting on a concurrent op to complete
+    parked    # We will not service operations until the manager unparks us
+}
+
+global {
+    instantiate server_rpc
+    instantiate manager_rpc
+
+    instance net : tcp.net(msg_t)
+    instance man_net : tcp.net(man_msg_t)
+}
+
+instantiate manager_mod
 
 process server(self: server_id) = {
 
@@ -35,11 +51,12 @@ process server(self: server_id) = {
     import action insert_resp(ret: tuple)
     import action remove_resp(ret: option[tuple])
 
+    import action park_commit
+    import action unpark_commit
+
     ##########################################################################
 
     common {
-        instantiate server_rpc
-        instantiate manager_rpc
     }
 
     ##########################################################################
@@ -48,7 +65,18 @@ process server(self: server_id) = {
 
 
     # Has this node joined the tuplespace?
-    var active : bool
+    var server_state : active_state_t
+
+    # Who parked us?
+    var parker : server_id
+
+    # Are we accepting operations, draining the operation we have in flight,
+    # or blocking at the request of another node?
+    var parked_state : parked_state_t
+
+    # Has our client issued an asynchronous operation (removal, insertion)
+    # that has not yet been committed?
+    var op_inflight : bool
 
     # The servers that the node believes is part of the tuplespace.
     instance view: ordered_set(server_id)
@@ -61,6 +89,15 @@ process server(self: server_id) = {
     # view.
     instance acks : ordered_set(server_id)
 
+    # If we have requested a parking operation, how many ACKs back have we gotten?
+    # (This is a separate state variable from `acks` as we might be in the middle of
+    # an operation where we wait for ACKs to come back, and so we don't want to
+    # interleave those.
+    instance parked_acks : ordered_set(server_id)
+
+    ##########################################################################
+
+
     # Are we undoing some marking operations?
     var rolling_back : bool 
 
@@ -70,12 +107,10 @@ process server(self: server_id) = {
     implementation {
 
         # The overlay network for servers to service client-level operations.
-        instance net : tcp.net(msg_t)
         instance sock : net.socket
 
         # The overlay network for server <-> manager interaction.
 
-        instance man_net : tcp.net(man_msg_t)
         instance man_sock : man_net.socket
 
         after init {
@@ -86,10 +121,13 @@ process server(self: server_id) = {
             view.insert(1);
             view.insert(2);
 
-            active := (view.member(self));
+            server_state := live if view.member(self) else unjoined;
+
+            parked_state := unparked;
         }
 
         implement insert {
+            op_inflight := true;
             var msg: store_req;
             msg.src := self;
             msg.tpl := tpl;
@@ -98,6 +136,8 @@ process server(self: server_id) = {
         }
 
         implement remove {
+            op_inflight := true;
+
             # To avoid racing on an already-marked tuple, set ignore_marked
             # to true.
             var materialised : option[tuple] := tuples.get_match(tpl, true);
@@ -217,7 +257,7 @@ process server(self: server_id) = {
                     acks.insert(msg.src);
 
                     if commit_reached {
-                    #if ack_count = cast(server_id.max) + 1 {
+                        #if ack_count = cast(server_id.max) + 1 {
                         debug "Marking complete" with self=self, tpl=msg.tpl;
                         acks.erase(acks.begin(), acks.end());
 
@@ -300,6 +340,79 @@ process server(self: server_id) = {
             }
         }
 
+
+        ###### Server joining
+
+        implement join {
+            server_state := joining;
+
+            var msg : join_msg_t;
+            msg.src := self;
+            man_sock.send(manager(0).sock.id,msg);
+        }
+
+        implement bootstrap_msg_t.handle(msg: bootstrap_msg_t) {
+            debug "bootstrap_msg_t.handle" with self=self, msg=msg;
+
+            # Broadcast a park request to all the nodes.  Once they come back,
+            # we can proceed with the parked operation (currently: the parked
+            # operation we have is replication, but in principle there could be
+            # others as well.)
+            var msg: park_req;
+            msg.src := self;
+            broadcast(msg);
+
+        }
+
+        implement park_req.handle(msg: park_req) {
+            debug "park_req.handle" with self=self, parker=msg.src, inf=op_inflight;
+            # If we don't have an outstanding operation, just park ourselves
+            # immediately.  Otherwise, remember to do it after we commit next.
+            if parked_state = unparked {
+                parker := msg.src;
+                if ~op_inflight {
+                    parked_state := parked;
+
+                    # send the response back, saying we'll not process anything more
+                    # until we get the unpark.
+                    var resp : park_resp;
+                    resp.src := self;
+                    unicast(resp, parker);
+                } else {
+                    # We will send the response back after the current operation
+                    # commits.
+                    parked_state := parking;
+                }
+            }
+        }
+
+        implement park_resp.handle(msg: park_resp) {
+            parked_acks.insert(msg.src);
+
+            # Have all the server_ids responded back saying they've parked?
+            # If so, we can tell the client to retry.
+            if park_commit_reached {
+                debug "Parking complete" with self=self;
+                parked_acks.erase(parked_acks.begin(), parked_acks.end());
+                park_commit;
+
+                #TODO: replicate
+                var resp : unpark;
+                resp.src := self;
+                broadcast(resp);
+            }
+
+        }
+
+
+        implement unpark.handle(msg: unpark) {
+            debug "unpark.handle" with self=self;
+            if parked_state = parked & msg.src = parker {
+                parked_state := unparked;
+                unpark_commit;
+            }
+        }
+
         # The commit point for inserts and removals is once we've heard back
         # from all servers in our view.  If we've reached the commit point,
         # then the set of nodes we've heard back from needs to be an improper
@@ -314,6 +427,23 @@ process server(self: server_id) = {
             while ret & vi ~= ve {
                 var val := vi.value();
                 if ~acks.member(val) {
+                    ret := false; 
+                }
+
+                vi := view.next(vi);
+            }
+        }
+        # This code duplication is most unfortunate except that I can't typedef
+        # ordered_set(server_id) to something without a `(` in it, so the parser
+        # gets confused when it tries to parse the argument list to the action.
+        action park_commit_reached returns (ret: bool) = {
+            var vi := view.begin();
+            var ve := view.end();
+
+            ret := true;
+            while ret & vi ~= ve {
+                var val := vi.value();
+                if ~parked_acks.member(val) {
                     ret := false; 
                 }
 
@@ -346,10 +476,12 @@ process server(self: server_id) = {
 
             # Only nodes that believe themselves to be part of the tuplespace
             # should ever be issuing client requests.
-            #invariant ~active(N) -> ~client_operating(N)
+            invariant (server_state(N) ~= live) -> ~client_operating(N)
 
             # The only blocking operations we allow are inserts and removes,
             # and we can only be doing one at a time.
+            invariant op_inflight(N) <-> client_operating(N)
+            invariant client_operating(N) -> (parked_state(N) ~= parked)
             invariant client_operating(N) <-> inserting(N) | removing(N)
             invariant inserting(N) -> ~removing(N)
             invariant removing(N) -> ~inserting(N)
@@ -373,13 +505,14 @@ process server(self: server_id) = {
                     # If we return anything, it must be present somewhere in
                     # the tuplespace.  It's ok if it's not stored everywhere,
                     # since a read may be concurrent with an insert or removal.
-                    require(exists N. server(N).active -> stored(N, ret.contents));
+                    require(exists N. server(N).server_state = live -> stored(N, ret.contents));
                 }
             }
 
             after insert_resp(self: server_id, ret: tuple) {
                 require inserting(self);
                 inserting(self) := false;
+                op_inflight(self) := false;
 
                 # Not sure that this is the best way to write this
                 # specification, but the intention is that in the presence of a
@@ -387,8 +520,8 @@ process server(self: server_id) = {
                 # all nodes (serialising the two concurrent operations as
                 # remove -> insert), or it failed completely (serialising as
                 # insert -> remove).
-                require (server(N).active -> stored(N, ret)) |
-                        (server(N).active -> ~stored(N, ret));
+                require (server(N).server_state = live -> stored(N, ret)) |
+                (server(N).server_state = live -> ~stored(N, ret));
 
                 call unblock_client(self);
             }
@@ -396,6 +529,7 @@ process server(self: server_id) = {
             after remove_resp(self: server_id, ret: option[tuple]) {
                 require removing(self);
                 removing(self) := false;
+                op_inflight(self) := false;
 
                 if ~ret.is_empty {
                     # Similarly to the above: If we return anything, it must
@@ -404,34 +538,42 @@ process server(self: server_id) = {
                     # happened on any node.  The lhs indicates that the remove
                     # would be serialised second, and the rhs that the insert
                     # was.
-                    require (server(N).active -> stored(N, ret.contents)) |
-                            (server(N).active -> ~stored(N, ret.contents));
-                    }
+                    require (server(N).server_state = live -> stored(N, ret.contents)) |
+                    (server(N).server_state = live -> ~stored(N, ret.contents));
+                }
 
                 call unblock_client(self);
             }
         }
 
         before join {
-            require ~active;
+            require server_state = unjoined;
         }
+
 
         # Ensure sequential operations on a given server_id.
         # (TODO: maybe this is better moved into a `client` isolate?)
         before read {
-            require active;
+            require server_state = live;
+            require parked_state = unparked;
             require tpl.end > 0; # Don't try to read the empty tuple.
             require ~client_operating(self);
         }
         before insert {
-            require active;
+            require server_state = live;
+            # TODO: we will later enqueue operations for a parked server
+            # to be done after unparking
+            require parked_state = unparked;
             require ~client_operating(self);
             require tpl.end > 0; # Don't try to insert the empty tuple.
             client_operating(self) := true;
             inserting(self) := true;
         }
         before remove {
-            require active;
+            require server_state = live;
+            # TODO: we will later enqueue operations for a parked server
+            # to be done after unparking
+            require parked_state = unparked;
             require ~client_operating(self);
             require tpl.end > 0; # Don't try to remove the empty tuple.
             client_operating(self) := true;
@@ -442,6 +584,19 @@ process server(self: server_id) = {
         action unblock_client = {
             debug "unblock_client" with self=self;
             require client_operating(self);
+
+            # Now that our operation is done: if we promised to park, do
+            # it!
+            if parked_state = parking {
+                parked_state := parked;
+
+                # send the response back, saying we'll not process anything more
+                # until we get the unpark.
+                var resp : park_resp;
+                resp.src := self;
+                unicast(resp, parker);
+            }
+
             client_operating(self) := false;
         }
 
@@ -462,5 +617,5 @@ attribute server.remove.weight = "0.33"
 
 # Topology changes should be very infrequent just so we spread the events out
 # through the test run.
-attribute server.join.weight = "0.01"
-attribute manager.is_down.weight = "0.01"
+attribute server.join.weight = "0.1"
+

@@ -14,7 +14,7 @@ CHK=ivy_check
 CHKFLAGS=isolate=this detailed=false
 
 .PHONY: all build clean test bmc
-all: build test bmc
+all: build test
 
 build: $(SRCDIR)$(EXE)
 
@@ -22,8 +22,7 @@ $(SRCDIR)$(EXE): $(addprefix $(SRCDIR), $(SRCS))
 	cd $(SRCDIR); $(CC) $(CFLAGS) $(notdir $<)
 
 test: build
-	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE) | sed -e '/{/,/}$$/ d'
-
+	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE) #| sed -e '/{/,/}$$/ d'
 
 bmc:
 	cd $(SRCDIR); $(CHK) $(CHKFLAGS) tablet.ivy

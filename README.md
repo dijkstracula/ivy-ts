@@ -11,7 +11,8 @@
                           (_, _)
 ```
 
-Tuplespaces in IVy
+Tuplespaces in IVy, formally-verified to have
+[https://www.youtube.com/watch?v=4Q7FTjhvZ7Y&t=1098s](zarro boogs)
 
 ## Authors
 
@@ -22,8 +23,10 @@ Tuplespaces in IVy
 
 ```
 doc/architecture.md ; High-level project structure
+doc/failover.md     ; Behaviour under topology changes
+doc/futurework.md   ; If we had one more day...
 doc/operations.md   ; Client operations, consistency guarantees, pseudocode
-doc/proposal.md     ; The submitted project proposal
+doc/proposal.md     ; The original project proposal
 ```
 
 ## Setup:
