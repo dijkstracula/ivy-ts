@@ -135,6 +135,11 @@ process server(self: server_id) = {
     import action remove_resp(ret: option[tuple])
 
 
+    ##########################################################################
+
+    # State variables for failover and replication
+
+
     # Has this node joined the tuplespace?
     var active : bool
 
@@ -148,8 +153,6 @@ process server(self: server_id) = {
     # that this then relates to specifically the server_ids in the current
     # view.
     instance acks : ordered_set(server_id)
-    # TODO: ack_count might be deprecated now that we have a view comparison action
-    var ack_count : nat # explicit counter since ordered_set doesn't expose a size()
 
     # Are we undoing some marking operations?
     var rolling_back : bool 
@@ -254,17 +257,14 @@ process server(self: server_id) = {
         }
 
         implement store_resp.handle {
-            debug "store_resp.handle" with self=self, msg=msg, ack_count=ack_count;
+            debug "store_resp.handle" with self=self, msg=msg;
             require inserting(self);
 
             acks.insert(msg.src);
-            ack_count := ack_count + 1;
 
             if commit_reached {
-                debug "NBT: store_resp" with ac=ack_count, nm=server_id.max;
                 # Have we received a resp from all server_ids?  If so, commit.
                 acks.erase(acks.begin(), acks.end());
-                ack_count := 0;
 
                 insert_resp(msg.tpl);
             }
@@ -285,15 +285,14 @@ process server(self: server_id) = {
             unicast(resp, msg.src);
         }
         implement mark_resp.handle {
-            debug "mark_resp.handle" with self=self, msg=msg, rb=rolling_back, ac=ack_count;
+            debug "mark_resp.handle" with self=self, msg=msg, rb=rolling_back;
             if ~rolling_back {
 
                 # If the marking failed, we need to roll back server_ids.
                 if ~msg.ok {
-                    debug "rolling back mark" with self=self, tpl=msg.tpl, ac=ack_count;
+                    debug "rolling back mark" with self=self, tpl=msg.tpl;
                     rolling_back := true;
                     acks.erase(acks.begin(), acks.end());
-                    ack_count := 0;
 
                     var msg2 : undo_mark_req;
                     msg2.src := self;
@@ -305,13 +304,11 @@ process server(self: server_id) = {
                     # If so, finish the first phase of the commit protocol
                     # and then progress to the actual deletion.
                     acks.insert(msg.src);
-                    ack_count := ack_count + 1;
 
                     if commit_reached {
                     #if ack_count = cast(server_id.max) + 1 {
                         debug "Marking complete" with self=self, tpl=msg.tpl;
                         acks.erase(acks.begin(), acks.end());
-                        ack_count := 0;
 
                         var msg2 : delete_req;
                         msg2.src := self;
@@ -339,11 +336,10 @@ process server(self: server_id) = {
         }
 
         implement undo_mark_resp.handle {
-            debug "undo_mark_resp.handle" with self=self, msg=msg, ac=ack_count;
+            debug "undo_mark_resp.handle" with self=self, msg=msg;
 
             if rolling_back {
                 acks.insert(msg.src);
-                ack_count := ack_count + 1;
 
                 # Have all the server_ids responded back saying they've unmarked?
                 # If so, we can tell the client to retry.
@@ -351,7 +347,6 @@ process server(self: server_id) = {
                     debug "Rollback complete" with self=self, tpl=msg.tpl;
                     rolling_back := false;
                     acks.erase(acks.begin(), acks.end());
-                    ack_count := 0;
 
                     remove_resp(option[tuple].empty);
                 }
@@ -383,13 +378,11 @@ process server(self: server_id) = {
                 assert it ~= acks.end();
 
                 acks.insert(msg.src);
-                ack_count := ack_count + 1;
 
                 # Have we received a successful resp from all server_ids?  If so, return
                 # the tuple to the client and unblock them.
                 if commit_reached {
                     acks.erase(acks.begin(), acks.end());
-                    ack_count := 0;
 
                     remove_resp(option[tuple].just(msg.tpl));
                 }
