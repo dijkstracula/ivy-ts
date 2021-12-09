@@ -6,6 +6,7 @@ include utils
 
 module manager_rpc = {
 
+    common {
     class man_msg_t = {
         action handle(self: manager_id, ^msg: man_msg_t)
     }
@@ -21,6 +22,7 @@ module manager_rpc = {
         field cur_servers : server_id_vec # For view updates, current servers in view
 
         action handle(self: manager_id, ^msg: view_msg_t)
+        }
     }
 
 }

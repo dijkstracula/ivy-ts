@@ -80,11 +80,11 @@ module manager_mod = {
                 msg.handle(self);
             }
 
-            implement heartbeat_msg_t.handle(self: manager_id, ^msg: heartbeat_msg_t) {
+            implement heartbeat_msg_t.handle(msg: heartbeat_msg_t) {
                 debug "heartbeat_msg_t.handle" with self=self, msg=msg;
             }
 
-            implement view_msg_t.handle(self: manager_id, ^msg: view_msg_t) {
+            implement view_msg_t.handle(msg: view_msg_t) {
                 debug "view_msg_t.handle" with self=self, msg=msg;
 
                 if msg.view = view {
