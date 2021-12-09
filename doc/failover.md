@@ -27,17 +27,3 @@ We can know that the new view message has gone out at least.  But, that will be
 over the `man_net` overlay network which can be arbitrarily delayed vs
 insert/delete messages on the other overlay network.  So what happens if:
 
-1) Nascent node asks replicating node for its tuples
-2) Replicating node sends its tuples over
-3) Inserting node broadcasts insert to the replicating node and commits
-4) Inserting node is informed of the new view, but the nascent node is missing the insert
-
-Does insert need to be a 2PC, too?  I don't even know if that's enough:
-consider a tuple removal, where both marking and removal happens in step 3 of
-the above.
-
-Is the thing we want, morally, the tuple snapshot + "snapshot of all in-flight
-messages to that node"?  
-
-Do we need ACKs back on new views?  Or at minimum telling the manager "node 0,
-copy your state over to node n+1"?

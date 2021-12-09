@@ -137,4 +137,23 @@ module manager_rpc = {
         action handle(self: manager_id, ^msg: view_msg_t)
     }
 
+    # A park message suspends any new messages from being processed.  After all
+    # responses come back to the manager, we know the set of servers are quiesecent,
+    # and can perform non-local updates like consistent node bootstrapping.
+
+    subclass park_req of man_msg_t = {
+        field src: manager_id
+        field to_bootstrap: server_id
+        action handle(self: server_id, ^msg: park_req)
+    }
+    subclass park_resp of man_msg_t = {
+        field src: server_id
+        field to_bootstrap: server_id
+        action handle(self: manager_id, ^msg: park_resp)
+    }
+    subclass unpark of man_msg_t = {
+        field unused: bool # Here to avoid ivy bug: https://github.com/kenmcmil/ivy/issues/43
+        action handle(self: manager_id, ^msg: unpark)
+    }
+
 }

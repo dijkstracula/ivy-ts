@@ -14,12 +14,13 @@ include utils
 
 instantiate manager_mod
 
-global {
-
-}
-
 ###############################################################################
 
+type parked_state = {
+    unparked, # Execution can proceed normally
+    parking,  # Manager has asked us to park; we are waiting on a concurrent op to complete
+    parked    # We will not service operations until the manager unparks us
+}
 
 process server(self: server_id) = {
 
@@ -49,6 +50,13 @@ process server(self: server_id) = {
 
     # Has this node joined the tuplespace?
     var active : bool
+
+
+    var is_parked : parked_state
+
+    # Has our client issued an asynchronous operation (removal, insertion)
+    # that has not yet been committed?
+    var op_inflight : bool
 
     # The servers that the node believes is part of the tuplespace.
     instance view: ordered_set(server_id)
@@ -85,8 +93,9 @@ process server(self: server_id) = {
             view.insert(0);
             view.insert(1);
             view.insert(2);
-
             active := (view.member(self));
+
+            is_parked := unparked;
         }
 
         implement insert {
@@ -300,6 +309,10 @@ process server(self: server_id) = {
             }
         }
 
+        implement park_req.handle(msg: park_req) {
+                         
+        }
+
         # The commit point for inserts and removals is once we've heard back
         # from all servers in our view.  If we've reached the commit point,
         # then the set of nodes we've heard back from needs to be an improper
@@ -350,6 +363,7 @@ process server(self: server_id) = {
 
             # The only blocking operations we allow are inserts and removes,
             # and we can only be doing one at a time.
+            invariant client_operating(N) -> (is_parked(N) = unparked)
             invariant client_operating(N) <-> inserting(N) | removing(N)
             invariant inserting(N) -> ~removing(N)
             invariant removing(N) -> ~inserting(N)
@@ -425,6 +439,9 @@ process server(self: server_id) = {
         }
         before insert {
             require active;
+            # TODO: we will later enqueue operations for a parked server
+            # to be done after unparking
+            require is_parked = unparked;
             require ~client_operating(self);
             require tpl.end > 0; # Don't try to insert the empty tuple.
             client_operating(self) := true;
@@ -432,6 +449,9 @@ process server(self: server_id) = {
         }
         before remove {
             require active;
+            # TODO: we will later enqueue operations for a parked server
+            # to be done after unparking
+            require is_parked = unparked;
             require ~client_operating(self);
             require tpl.end > 0; # Don't try to remove the empty tuple.
             client_operating(self) := true;

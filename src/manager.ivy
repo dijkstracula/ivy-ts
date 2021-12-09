@@ -1,5 +1,7 @@
 #lang ivy1.8
 
+include collections
+
 include messages
 include multi_paxos
 include utils
@@ -24,12 +26,17 @@ module manager_mod = {
 
         common {
             parameter fail_time : nat = 2
+            # TODO: The view needs to be more than just the topology.
             instance opt_view_msg : option(view_msg_t)
         }
 
         instance sock : man_net.socket
         instance timer : timeout_sec
         instance paxos : multi_paxos(manager_id, opt_view_msg, opt_view_msg.empty) 
+
+        # TODO: Does this need to be part of the view?  What happens if the manager
+        # node goes down while parking is in progress?
+        var park_acks : index
 
         implementation {
 
@@ -38,6 +45,8 @@ module manager_mod = {
             after init {
                 view := 0;
                 time := 0;
+                park_acks := 0;
+
                 proposed := false;
 
                 for it, i in server_id.iter {
@@ -90,6 +99,18 @@ module manager_mod = {
                     heard(msg.src) := time;
                 }
             }
+
+            implement park_resp.handle(^msg: park_resp) {
+                debug "park_resp.handle" with self=self, msg=msg;
+                park_acks := park_acks + 1;
+                if park_acks = cur_servers.size {
+                    # TODO: do we ever want to park all the servers for another reason?
+                    # if so we need to encode in the RPC what should be done next.
+                    # For now though just assume it's because we're bootstrapping a new node.
+                    park_acks := 0;
+                }
+            }
+
         }
     }
 
