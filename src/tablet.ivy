@@ -9,8 +9,8 @@ include numbers
 
 include utils
 
-# C/O Ken for his help with some module-juggling to get lexord working for
-# the `row` datatype.  Thanks!
+# C/O Ken for his help with some module-juggling to get lexord working for the
+# `row` datatype.  Thanks!
 instance tplord : lexord(elem,index,tuple)
 
 class row = {
@@ -31,8 +31,7 @@ module tablet = {
 
     action get_match(tmp: tuple_template, ignore_marked: bool) returns (ret: option[tuple])
     action get_exact(tpl: tuple, ignore_marked: bool) returns (ret: option[tuple])
-
-    # TODO: a get_all for failover?
+    action get_tuples returns (ret: vector[tuple])
 
     # Mutation operations
 
