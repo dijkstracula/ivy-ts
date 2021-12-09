@@ -1,0 +1,26 @@
+#lang ivy1.8
+
+include network
+include numbers
+include utils
+
+module manager_rpc = {
+
+    class man_msg_t = {
+        action handle(self: manager_id, ^msg: man_msg_t)
+    }
+
+    subclass heartbeat_msg_t of man_msg_t = {
+        field src: server_id    # For heartbeats, where did this originate?
+        action handle(self: manager_id, ^msg: heartbeat_msg_t)
+    }
+
+    subclass view_msg_t of man_msg_t = {
+        field src: server_id
+        field view : nat               # For view updates, the view number
+        field cur_servers : server_id_vec # For view updates, current servers in view
+
+        action handle(self: manager_id, ^msg: view_msg_t)
+    }
+
+}
