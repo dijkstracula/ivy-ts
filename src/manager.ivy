@@ -117,6 +117,7 @@ module manager_mod = {
             before is_down {
                 require server(s_down).server_state = live;
             }
+
         }
     }
 

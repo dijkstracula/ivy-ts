@@ -165,6 +165,7 @@ module manager_rpc = {
 
     ##########
 
+
     # For a node announcing its presence to the manager.
     subclass join_msg_t of man_msg_t = {
         field src : server_id # who is joining the party?

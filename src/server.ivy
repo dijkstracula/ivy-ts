@@ -153,7 +153,6 @@ process server(self: server_id) = {
                     remove_resp(materialised);
                 } else {
                     # Go ahead and mark the tuples to be removed.
-
                     var msg: mark_req;
                     msg.src := self;
                     msg.tpl := materialised.contents;
@@ -406,6 +405,7 @@ process server(self: server_id) = {
         }
 
 
+
         ###### Server joining
 
         implement join {
@@ -540,6 +540,7 @@ process server(self: server_id) = {
 
             # Only nodes that believe themselves to be part of the tuplespace
             # should ever be issuing client requests.
+            # TODO
             #invariant (server_state(N) ~= live) -> ~client_operating(N)
 
             # The only blocking operations we allow are inserts and removes,
@@ -634,7 +635,7 @@ process server(self: server_id) = {
             inserting(self) := true;
         }
         before remove {
-            require server_state = live & ~should_die;
+            require server_state = live;
             # TODO: we will later enqueue operations for a parked server
             # to be done after unparking
             require parked_state = unparked;
