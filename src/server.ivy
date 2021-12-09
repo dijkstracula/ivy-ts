@@ -112,14 +112,7 @@ global {
     }
 
 
-    class man_msg_t = {
-        field server_src: server_id    # For heartbeats, where did this originate?
-        field view : nat               # For view updates, the view number
-        field cur_servers : vector[server_id] # For view updates, current servers in view
-    }
-
     instance net : tcp.net(msg_t)
-    instance man_net : tcp_test.net(man_msg_t)
 }
 
 ###############################################################################
