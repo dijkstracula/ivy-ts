@@ -150,6 +150,9 @@ process server(self: server_id) = {
     import action insert_resp(ret: tuple)
     import action remove_resp(ret: option[tuple])
 
+    ##########################################################################
+
+    instantiate manager_rpc
 
     ##########################################################################
 
@@ -190,6 +193,7 @@ process server(self: server_id) = {
         instance sock : net.socket
 
         # The overlay network for server <-> manager interaction.
+        instance man_net : tcp.net(man_msg_t)
         instance man_sock : man_net.socket
 
         after init {

@@ -6,10 +6,11 @@
 include collections
 
 global {
-
     instance server_id : iterable
     
     instance manager_id : iterable
+
+    instance server_id_vec : vector(server_id)
 
     type elem
     interpret elem -> bv[3]

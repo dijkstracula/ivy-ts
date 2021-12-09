@@ -120,6 +120,19 @@ module tablet = {
             }
         }
 
+
+        implement get_tuples {
+            var it := tupleset.begin();
+            var e := tupleset.end();
+
+            while it ~= e {
+                var row := it.value();
+                ret := ret.append(row.contents);
+                it := tupleset.next(it);
+            }
+            
+        }
+
         implement add_tuple {
             debug "tablet.add_tuple" with self=self, tpl=tpl;
 
