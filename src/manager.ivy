@@ -20,11 +20,9 @@ module manager_mod = {
         var cur_servers : vector[server_id] # 
         var proposed : bool                 # Have we proposed a new view?
 
-        export action is_down # When the failure detector detects a node has parted
-
         common {
             parameter fail_time : nat = 2
-            instance opt_view_msg : option(view_msg_t)
+            instance opt_view_msg : option(view_msg)
         }
 
         instance sock : man_net.socket
@@ -33,8 +31,6 @@ module manager_mod = {
 
         implementation {
 
-            # current_view 
-            # 
             after init {
                 view := 0;
                 time := 0;
@@ -45,56 +41,68 @@ module manager_mod = {
                 }
             }
 
+	    # just here in case we want to add heartbeats + timeouts
             function is_up(S:server_id) = time <= heard(S) + fail_time
 
-            action announce(v:nat, cs:vector[server_id]) = {
+	    # When the failure detector detects a node has parted
+	    export action is_down(s_down:server_id)
+
+	    # pack up new servers 
+	    implement is_down {
+		var new_servers : vector[server_id];
+		for it, sv in cur_servers {
+		    if sv ~= s_down {
+			new_servers := new_servers.append(sv);
+		    }
+		}
+		# only send out new view if we haven't already deleted the server
+		if new_servers ~= cur_servers {
+		    announce(view.next, new_servers);
+		}
+	    }
+
+	    action announce(v:nat, new_servers:vector[server_id]) = {
                 if ~proposed {
-                    var msg : view_msg_t;
-                    msg.cur_servers := cs;
+                    var msg : view_msg;
+                    msg.cur_servers := new_servers;
                     paxos.server.propose(manager.opt_view_msg.just(msg));
                     proposed := true;
                 }
             }
-
+	    
             implement paxos.server.decide(inst: paxos.instance_t, op: opt_view_msg) {
                 proposed := false;
                 if ~op.is_empty {
                     view := view.next;
-
-                    var msg : view_msg_t := op.contents;
+                    var msg : view_msg := op.contents;
+		    cur_servers := msg.cur_servers;
                     msg.view := view;
                     broadcast(msg);
                 }
             }
 
-            action broadcast(msg:man_msg_t) = {
-                for it, sv in server_id.iter {
+            action broadcast(msg:view_msg) = {
+                for it, sv in cur_servers  {
+		    debug "sending new view" with server=sv, msg=msg;
                     sock.send(server(sv).man_sock.id, msg);
-                    # TODO: this may all have to go in the same file since I'm not sure
-                    # if Ivy will recognize what `server` is 
                 }
             }
 
-            implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
-                msg.handle(self);
-            }
+            # implement sock.recv(src:tcp.endpoint,msg:man_msg_t) {
+            #     msg.handle(self);
+            # }
 
-            implement heartbeat_msg_t.handle(^msg: heartbeat_msg_t) {
-                debug "heartbeat_msg_t.handle" with self=self, msg=msg;
-            }
-
-            implement view_msg_t.handle(^msg: view_msg_t) {
-                debug "view_msg_t.handle" with self=self, msg=msg;
-
-                if msg.view = view {
-                    heard(msg.src) := time;
-                }
-            }
+            # implement heartbeat_msg.handle(^msg: heartbeat_msg) {
+            #     debug "heartbeat_msg.handle" with self=self, msg=msg;
+	    # 	if msg.view = view {
+            #         heard(msg.src) := time;
+            #     }
+            # }
         }
     }
 
     # Topology changes should be very infrequent just so we spread the events out
     # through the test run.
-    attribute manager.is_down.weight = "0.01"
+    attribute manager.is_down.weight = "0.1"
 }
 
