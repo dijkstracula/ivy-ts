@@ -441,7 +441,7 @@ process server(self: server_id) = {
                 # remove -> insert), or it failed completely (serialising as
                 # insert -> remove).
                 require (server(N).active -> stored(N, ret)) |
-                        (server(N).active -> ~stored(N, ret));
+                (server(N).active -> ~stored(N, ret));
 
                 call unblock_client(self);
             }
@@ -458,8 +458,8 @@ process server(self: server_id) = {
                     # would be serialised second, and the rhs that the insert
                     # was.
                     require (server(N).active -> stored(N, ret.contents)) |
-                            (server(N).active -> ~stored(N, ret.contents));
-                    }
+                    (server(N).active -> ~stored(N, ret.contents));
+                }
 
                 call unblock_client(self);
             }

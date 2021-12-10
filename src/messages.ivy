@@ -125,12 +125,6 @@ module manager_rpc = {
         action handle(self: server_id, ^msg: man_msg_t)
     }
 
-    subclass heartbeat_msg of man_msg_t = {
-        field src: server_id    # For heartbeats, where did this originate?
-	field view: nat
-        action handle(self: manager_id, ^msg: heartbeat_msg)
-    }
-
     subclass view_msg of man_msg_t = {
         field src: server_id
         field view : nat               # For view updates, the view number
