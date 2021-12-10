@@ -3,6 +3,7 @@
 include messages
 include multi_paxos
 include utils
+include collections
 
 module manager_mod = {
 
@@ -17,7 +18,8 @@ module manager_mod = {
         var view : nat                      # The current view number
         var time : nat                      # The current time in seconds
         var heard(X:server_id) : nat        # Last time we head from server `X`
-        var cur_servers : vector[server_id] # 
+        var cur_servers : vector[server_id] # current servers in view
+	var all_servers : vector[server_id] # all available servers
         var proposed : bool                 # Have we proposed a new view?
 
         common {
@@ -35,10 +37,16 @@ module manager_mod = {
                 view := 0;
                 time := 0;
                 proposed := false;
+		cur_servers := cur_servers.append(0);
+		cur_servers := cur_servers.append(1);
+		cur_servers := cur_servers.append(2);
 
-                for it, i in server_id.iter {
-                    cur_servers := cur_servers.append(i);
-                }
+		var i : nat := 0;
+		while i <= cast(server_id.max) {
+		    all_servers := all_servers.append(cast(i));
+		    i := i + 1;
+		}
+
             }
 
 	    # just here in case we want to add heartbeats + timeouts
@@ -82,7 +90,7 @@ module manager_mod = {
             }
 
             action broadcast(msg:view_msg) = {
-                for it, sv in cur_servers  {
+                for it, sv in all_servers  {
 		    debug "sending new view" with server=sv, msg=msg;
                     sock.send(server(sv).man_sock.id, msg);
                 }
