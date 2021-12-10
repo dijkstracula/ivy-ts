@@ -147,20 +147,20 @@ module server_rpc = {
     }
 
 
-}
-
-module manager_rpc = {
-
-    class man_msg_t = {
-        action handle(self: server_id, ^msg: man_msg_t)
-    }
-
-    subclass view_msg of man_msg_t = {
+    subclass view_msg of msg_t = {
         field src: server_id
         field view : nat               # For view updates, the view number
         field cur_servers : vector[server_id] # For view updates, current servers in view
 
         action handle(self: server_id, ^msg: view_msg)
+    }
+
+}
+
+module manager_rpc = {
+
+    class man_msg_t = {
+        action handle(self: manager_id, ^msg: man_msg_t)
     }
 
     ##########

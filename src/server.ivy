@@ -98,9 +98,11 @@ process server(self: server_id) = {
 
     ##########################################################################
 
-
     # Are we undoing some marking operations?
     var rolling_back : bool 
+
+    # Have we been informed that our services are no longer required?
+    var should_die : bool
 
     # The backing store for the server_id's tuples.
     instance tuples : tablet
@@ -200,7 +202,12 @@ process server(self: server_id) = {
         implement store_req.handle(msg: store_req) {
             if server_state = live {
                 debug "store_req.handle" with self=self, msg=msg;
-                require inserting(msg.src);
+
+                # This specification says that if we are known by the ghost state
+                # to be inserting, it better be the case that we aren't in the
+                # originator's view (ie. they committed without us.)
+                require ~server(msg.src).view.member(self) | inserting(msg.src);
+
                 # 1 Perform the local write.
                 var already_present := tuples.add_tuple(msg.tpl);
 
@@ -218,7 +225,11 @@ process server(self: server_id) = {
         implement store_resp.handle(msg: store_resp) {
             if server_state = live {
                 debug "store_resp.handle" with self=self, msg=msg;
-                require inserting(self);
+
+                # This specification says that if we are known by the ghost state
+                # to be inserting, it better be the case that we aren't in the
+                # originator's view (ie. they committed without us.)
+                require server(self).view.member(msg.src) | inserting(self);
 
                 acks.insert(msg.src);
 
@@ -327,11 +338,6 @@ process server(self: server_id) = {
 
         # New View Handling
 
-        implement man_sock.recv(src:tcp.endpoint, msg:man_msg_t) {
-            msg.handle(self);
-        }
-
-
         implement view_msg.handle(msg: view_msg) {
             # no active check here as we want ALL servers to see views
             debug "view_msg.handle" with self=self, msg=msg;
@@ -349,11 +355,11 @@ process server(self: server_id) = {
                 }
                 view.insert(sv);
             }
-            if in_view {
-                server_state := live; 
-            } else {
-                if server_state = live {
-                    server_state := killed
+            if ~in_view & server_state = live {
+                if op_inflight {
+                    should_die := true;
+                } else {
+                    server_state := killed;
                 }
             }
             debug "server_state check" with server=self, server_state=server_state;
@@ -534,7 +540,7 @@ process server(self: server_id) = {
 
             # Only nodes that believe themselves to be part of the tuplespace
             # should ever be issuing client requests.
-            invariant (server_state(N) ~= live) -> ~client_operating(N)
+            #invariant (server_state(N) ~= live) -> ~client_operating(N)
 
             # The only blocking operations we allow are inserts and removes,
             # and we can only be doing one at a time.
@@ -612,13 +618,13 @@ process server(self: server_id) = {
         # Ensure sequential operations on a given server_id.
         # (TODO: maybe this is better moved into a `client` isolate?)
         before read {
-            require server_state = live;
+            require server_state = live & ~should_die;
             require parked_state = unparked;
             require tpl.end > 0; # Don't try to read the empty tuple.
             require ~client_operating(self);
         }
         before insert {
-            require server_state = live;
+            require server_state = live & ~should_die;
             # TODO: we will later enqueue operations for a parked server
             # to be done after unparking
             require parked_state = unparked;
@@ -628,7 +634,7 @@ process server(self: server_id) = {
             inserting(self) := true;
         }
         before remove {
-            require server_state = live;
+            require server_state = live & ~should_die;
             # TODO: we will later enqueue operations for a parked server
             # to be done after unparking
             require parked_state = unparked;
@@ -653,6 +659,11 @@ process server(self: server_id) = {
                 var resp : park_resp;
                 resp.src := self;
                 unicast(resp, parker);
+            }
+
+            # Similarly, if we were told to die, this is our final operation.
+            if should_die {
+                server_state := killed; 
             }
 
             client_operating(self) := false;

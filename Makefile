@@ -1,7 +1,7 @@
 
 SRCDIR=src/
 TOPLVLSRC=server.ivy
-SRCS=$(TOPLVLSRC) utils.ivy tablet.ivy
+SRCS=$(TOPLVLSRC) utils.ivy tablet.ivy messages.ivy manager.ivy
 
 CC=ivyc
 CFLAGS=target=test
@@ -22,7 +22,7 @@ $(SRCDIR)$(EXE): $(addprefix $(SRCDIR), $(SRCS))
 	cd $(SRCDIR); $(CC) $(CFLAGS) $(notdir $<)
 
 test: build
-	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE) #| sed -e '/{/,/}$$/ d'
+	cd $(SRCDIR); $(LCH) $(LCHFLAGS) $(EXE) | sed -e '/{/,/}$$/ d'
 
 bmc:
 	cd $(SRCDIR); $(CHK) $(CHKFLAGS) tablet.ivy
