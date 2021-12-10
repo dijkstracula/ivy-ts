@@ -70,6 +70,9 @@ process server(self: server_id) = {
     # Who parked us?
     var parker : server_id
 
+    # If we are chosen to replicate our tuples, to whom should that be?
+    var replicate_to : server_id
+
     # Are we accepting operations, draining the operation we have in flight,
     # or blocking at the request of another node?
     var parked_state : parked_state_t
@@ -419,6 +422,10 @@ process server(self: server_id) = {
         implement bootstrap_msg_t.handle(msg: bootstrap_msg_t) {
             debug "bootstrap_msg_t.handle" with self=self, msg=msg;
 
+            # Remember who we are going to bootstrap, for after everyone is
+            # parked.
+            replicate_to := msg.new_server;
+
             # Broadcast a park request to all the nodes.  Once they come back,
             # we can proceed with the parked operation (currently: the parked
             # operation we have is replication, but in principle there could be
@@ -452,6 +459,7 @@ process server(self: server_id) = {
         }
 
         implement park_resp.handle(msg: park_resp) {
+            debug "park_resp.handle" with self=self, parker=msg.src, inf=op_inflight;
             parked_acks.insert(msg.src);
 
             # Have all the server_ids responded back saying they've parked?
@@ -461,12 +469,38 @@ process server(self: server_id) = {
                 parked_acks.erase(parked_acks.begin(), parked_acks.end());
                 park_commit;
 
-                #TODO: replicate
-                var resp : unpark;
-                resp.src := self;
-                broadcast(resp);
+                var r_req : replicate_req;
+                r_req.src := self;
+                r_req.tuples := tuples.get_all();
+
+                unicast(r_req, replicate_to);
+
+            }
+        }
+
+        implement replicate_req.handle(msg: replicate_req) {
+            debug "replicate_req.handle" with self=self;
+
+            var i := msg.tuples.begin();
+            var e := msg.tuples.end();
+
+            while i ~= e {
+                var tpl := msg.tuples.get(i);
+                var ignored := tuples.add_tuple(tpl);
+                i := i + 1;
             }
 
+            var resp : replicate_resp;
+            unicast(resp, msg.src);
+        }
+
+        implement replicate_resp.handle(msg: replicate_resp) {
+            debug "replicate_resp.handle" with self=self;
+
+            #TODO: replicate
+            var resp : unpark;
+            resp.src := self;
+            broadcast(resp);
         }
 
 
@@ -609,6 +643,11 @@ process server(self: server_id) = {
 
                 call unblock_client(self);
             }
+        }
+
+        before replicate_req.handle {
+            #require view(server(N).parked_state = parked;
+            require server_state = joining;
         }
 
         before join {

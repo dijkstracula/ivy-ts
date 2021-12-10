@@ -32,7 +32,7 @@ module tablet = {
     action get_match(tmp: tuple_template, ignore_marked: bool) returns (ret: option[tuple])
     action get_exact(tpl: tuple, ignore_marked: bool) returns (ret: option[tuple])
 
-    # TODO: a get_all for failover?
+    action get_all returns (ret: vector[tuple])
 
     # Mutation operations
 
@@ -63,7 +63,7 @@ module tablet = {
 
         implement get_exact {
             debug "tablet.get_exact" with self=self, tpl=tpl, ignore_marked=ignore_marked;
-            
+
             var key : row;
             key.contents := tpl;
 
@@ -121,6 +121,17 @@ module tablet = {
             }
         }
 
+        implement get_all {
+            debug "tablet.get_all" with self=self;
+            var it := tupleset.begin();
+            var e := tupleset.end();
+
+            while it ~= e {
+                var tpl := it.value();
+                ret := ret.append(tpl.contents);
+                it := tupleset.next(it);
+            }
+        }
 
         implement add_tuple {
             debug "tablet.add_tuple" with self=self, tpl=tpl;
@@ -137,7 +148,7 @@ module tablet = {
 
         implement mark {
             debug "tablet.mark" with self=self, tpl=tpl, marker=marker;
-            
+
             ok := false;
 
             var key : row;
@@ -173,7 +184,7 @@ module tablet = {
 
             var it := tupleset.lub(row.iter.create(key));
             var r := it.value();
-            
+
             ok := ~r.mark.is_empty & r.mark.contents=marker;
             #require ok;
             tupleset.erase(it, tupleset.next(it));
