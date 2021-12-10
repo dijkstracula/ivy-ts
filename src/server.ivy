@@ -54,6 +54,8 @@ process server(self: server_id) = {
     import action park_commit
     import action node_unparked
 
+    import action joined(new_node: server_id)
+
     ##########################################################################
 
     common {
@@ -71,7 +73,7 @@ process server(self: server_id) = {
     var parker : server_id
 
     # If we are chosen to replicate our tuples, to whom should that be?
-    var replicate_to : server_id
+    var replicate_to : option[server_id]
 
     # Are we accepting operations, draining the operation we have in flight,
     # or blocking at the request of another node?
@@ -180,6 +182,10 @@ process server(self: server_id) = {
 
         implement sock.recv(src:tcp.endpoint, msg:msg_t) {
             msg.handle(self);
+        }
+        implement man_sock.recv(src: tcp.endpoint, msg:man_msg_t) {
+            require server_state = joining;
+            server_state := unjoined;
         }
 
         action unicast(outgoing : msg_t, dst_id : server_id) = {
@@ -341,30 +347,48 @@ process server(self: server_id) = {
         # New View Handling
 
         implement view_msg.handle(msg: view_msg) {
-            # no active check here as we want ALL servers to see views
-            debug "view_msg.handle" with self=self, msg=msg;
-            view_number := msg.view;
+            if server_state ~= unjoined {
+                # no active check here as we want ALL servers to see views
+                debug "view_msg.handle" with self=self, msg=msg;
+                view_number := msg.view;
 
-            var b := view.begin();
-            var e := view.end();
-            view.erase(b, e);
+                var b := view.begin();
+                var e := view.end();
+                view.erase(b, e);
 
-            # put current servers in view
-            var in_view : bool := false;
-            for it, sv in msg.cur_servers {
-                if sv = self {
-                    in_view := true;
+                # put current servers in view
+                var in_view : bool := false;
+                for it, sv in msg.cur_servers {
+                    if sv = self {
+                        in_view := true;
+                    }
+                    view.insert(sv);
                 }
-                view.insert(sv);
-            }
-            if ~in_view & server_state = live {
-                if op_inflight {
-                    should_die := true;
-                } else {
-                    server_state := killed;
+                if ~in_view & server_state = live {
+                    if op_inflight {
+                        should_die := true;
+                    } else {
+                        server_state := killed;
+                    }
                 }
+
+                # Were we responsible for parking all the nodes because we were
+                # responsible for a new node coming online?  If so, it's time to
+                # unpark everybody.
+                if ~replicate_to.is_empty() {
+                    replicate_to := option[server_id].empty;
+                    var up : unpark;
+                    up.src := self;
+                    broadcast(up);
+                }
+
+                if server_state = joining & view.member(self) {
+                    server_state := live; # we're live!
+                    joined(self);
+                }
+
+                debug "server_state check" with server=self, server_state=server_state;
             }
-            debug "server_state check" with server=self, server_state=server_state;
         }
 
         # Tuple deletion
@@ -424,7 +448,7 @@ process server(self: server_id) = {
 
             # Remember who we are going to bootstrap, for after everyone is
             # parked.
-            replicate_to := msg.new_server;
+            replicate_to := option[server_id].just(msg.new_server);
 
             # Broadcast a park request to all the nodes.  Once they come back,
             # we can proceed with the parked operation (currently: the parked
@@ -437,9 +461,11 @@ process server(self: server_id) = {
         }
 
         implement park_req.handle(msg: park_req) {
-            debug "park_req.handle" with self=self, parker=msg.src, inf=op_inflight;
+            debug "park_req.handle" with self=self, parker=msg.src, ps=parked_state;
             # If we don't have an outstanding operation, just park ourselves
             # immediately.  Otherwise, remember to do it after we commit next.
+            #assert parked_state ~= parked;
+
             if parked_state = unparked {
                 parker := msg.src;
                 if ~op_inflight {
@@ -473,8 +499,8 @@ process server(self: server_id) = {
                 r_req.src := self;
                 r_req.tuples := tuples.get_all();
 
-                unicast(r_req, replicate_to);
-
+                assert ~replicate_to.is_empty();
+                unicast(r_req, replicate_to.contents);
             }
         }
 
@@ -490,19 +516,19 @@ process server(self: server_id) = {
                 i := i + 1;
             }
 
-            server_state := live;
-
             var resp : replicate_resp;
+            resp.new_server := self;
             unicast(resp, msg.src);
         }
 
         implement replicate_resp.handle(msg: replicate_resp) {
             debug "replicate_resp.handle" with self=self;
 
-            #TODO: replicate
-            var resp : unpark;
-            resp.src := self;
-            broadcast(resp);
+            # Once we've heard back from the replicated node, we know that they
+            # are up-to-date.
+            var resp : bootstrap_resp;
+            resp.new_server := msg.new_server;
+            man_sock.send(manager(0).sock.id,resp);
         }
 
 
@@ -656,9 +682,10 @@ process server(self: server_id) = {
             require server_state = unjoined;
         }
 
-
-        # Ensure sequential operations on a given server_id.
-        # (TODO: maybe this is better moved into a `client` isolate?)
+        # Ensure sequential operations on a given server_id.  Note: the
+        # parked_state = unparked check in in particular should be something
+        # a client can track and batch up, but we're making it a precondition
+        # here to simplify matters.
         before read {
             require server_state = live & ~should_die;
             require parked_state = unparked;
@@ -728,5 +755,5 @@ attribute server.remove.weight = "0.33"
 
 # Topology changes should be very infrequent just so we spread the events out
 # through the test run.
-attribute server.join.weight = "0.01"
+attribute server.join.weight = "0.00"
 

@@ -121,7 +121,7 @@ module server_rpc = {
     }
 
     subclass replicate_resp of msg_t = {
-        field unused : bool # False if we sent this to a node that has parted
+        field new_server : server_id
 
         action handle(self: server_id, ^msg: replicate_resp)
     }
@@ -173,4 +173,8 @@ module manager_rpc = {
         action handle(self: manager_id, ^msg: join_msg_t)
     }
 
+    subclass bootstrap_resp of man_msg_t = {
+        field new_server : server_id
+        action handle(self: manager_id, ^msg: bootstrap_resp)
+    }
 }

@@ -11,7 +11,7 @@ module manager_mod = {
 
     process manager(self: manager_id) = {
 
-
+        var joining: bool                   # are we handling a server join?
         var view : nat                      # The current view number
         var time : nat                      # The current time in seconds
         var heard(X:server_id) : nat        # Last time we head from server `X`
@@ -33,6 +33,7 @@ module manager_mod = {
         implementation {
 
             after init {
+                joining := false;
                 view := 0;
                 time := 0;
 
@@ -74,15 +75,19 @@ module manager_mod = {
             }
 
             action announce(v:nat, new_servers:vector[server_id]) = {
-                if ~proposed {
-                    var msg : view_msg;
-                    msg.cur_servers := new_servers;
-                    paxos.server.propose(manager.opt_view_msg.just(msg));
-                    proposed := true;
-                }
+                debug "announce" with new_servers=new_servers;
+                proposed := false;
+                view := view.next;
+                var msg : view_msg;
+                msg.view := view;
+                msg.cur_servers := new_servers;
+
+                cur_servers := new_servers;
+                broadcast(msg);
             }
 
             implement paxos.server.decide(inst: paxos.instance_t, op: opt_view_msg) {
+                debug "decide" with op=op;
                 proposed := false;
                 if ~op.is_empty {
                     view := view.next;
@@ -101,15 +106,41 @@ module manager_mod = {
             }
 
             implement join_msg_t.handle(msg: join_msg_t) {
-                var dst := cur_servers.get(0); # an "arbitrary" node to replicate over
+                if joining {
+                    sock.send(server(msg.src).sock.id, msg);
+                } else {
+                    joining := true;
+                    var dst := cur_servers.get(0); # an "arbitrary" node to replicate over
 
-                debug "join_msg_t.handle" with self=self, msg=msg, dst=dst;
+                    debug "join_msg_t.handle" with self=self, msg=msg, dst=dst;
 
-                var m2 : bootstrap_msg_t;
-                m2.manager_src := self;
-                m2.new_server := msg.src;
+                    var m2 : bootstrap_msg_t;
+                    m2.manager_src := self;
+                    m2.new_server := msg.src;
 
-                server_sock.send(server(dst).sock.id, m2);
+                    server_sock.send(server(dst).sock.id, m2);
+                }
+            }
+
+            implement bootstrap_resp.handle(msg: bootstrap_resp) {
+                var contains := false;
+                var new_servers : vector[server_id];
+
+                var i := cur_servers.begin();
+                var e := cur_servers.end();
+
+                while i ~= e {
+                    new_servers := new_servers.append(cur_servers.get(i));
+                    if cur_servers.get(i) = msg.new_server {
+                        contains := true;
+                    }
+                    i := i + 1;
+                }
+                if ~contains {
+                    new_servers := new_servers.append(msg.new_server);
+                    announce(view.next, new_servers);
+                }
+                joining := false;
             }
         }
 
@@ -117,12 +148,11 @@ module manager_mod = {
             before is_down {
                 require server(s_down).server_state = live;
             }
-
         }
     }
 
     # Topology changes should be very infrequent just so we spread the events out
     # through the test run.
-    attribute manager.is_down.weight = "0.01"
+    attribute manager.is_down.weight = "0.00"
 }
 
