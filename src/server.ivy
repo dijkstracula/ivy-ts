@@ -52,6 +52,7 @@ process server(self: server_id) = {
 
     # The servers that the node believes is part of the tuplespace.
     instance view: ordered_set(server_id)
+    var view_number : nat
 
     # For the current in-flight operation, how many have we heard back from?
     #
@@ -90,29 +91,33 @@ process server(self: server_id) = {
         }
 
         implement insert {
-            var msg: store_req;
-            msg.src := self;
-            msg.tpl := tpl;
-
-            broadcast(msg);
+	    if active {
+		var msg: store_req;
+		msg.src := self;
+		msg.tpl := tpl;
+		
+		broadcast(msg);
+	    }
         }
 
         implement remove {
-            # To avoid racing on an already-marked tuple, set ignore_marked
-            # to true.
-            var materialised : option[tuple] := tuples.get_match(tpl, true);
-            if materialised.is_empty {
-                # If there's nothing we can extract that matches the template,
-                # then NACK back to the client.
-                remove_resp(materialised);
-            } else {
-                # Go ahead and mark the tuples to be removed.
-
-                var msg: mark_req;
-                msg.src := self;
-                msg.tpl := materialised.contents;
-
-                broadcast(msg);
+	    if active {
+		# To avoid racing on an already-marked tuple, set ignore_marked
+		# to true.
+		var materialised : option[tuple] := tuples.get_match(tpl, true);
+		if materialised.is_empty {
+                    # If there's nothing we can extract that matches the template,
+                    # then NACK back to the client.
+                    remove_resp(materialised);
+		} else {
+                    # Go ahead and mark the tuples to be removed.
+		    
+                    var msg: mark_req;
+                    msg.src := self;
+                    msg.tpl := materialised.contents;
+		    
+                    broadcast(msg);
+		}
             }
         }
 
@@ -120,7 +125,9 @@ process server(self: server_id) = {
             # Since our commit point for removals is after marking, we are okay
             # to still concurrently read marked tuples, so set ignore_marked to
             # false.
-            ret := tuples.get_match(tpl, false);
+	    if active {
+		ret := tuples.get_match(tpl, false);
+	    }
         }
 
         #######################################################################
@@ -151,161 +158,205 @@ process server(self: server_id) = {
         # Tuple writing
 
         implement store_req.handle(msg: store_req) {
-            debug "store_req.handle" with self=self, msg=msg;
-            require inserting(msg.src);
+	    if active {
+		debug "store_req.handle" with self=self, msg=msg;
+		require inserting(msg.src);
+		# 1 Perform the local write.
+		var already_present := tuples.add_tuple(msg.tpl);
+		
+		stored(self, msg.tpl) := true; # Ghost action to remember what we've stored.
 
-            # 1) Perform the local write.
-            var already_present := tuples.add_tuple(msg.tpl);
-            stored(self, msg.tpl) := true; # Ghost action to remember what we've stored.
-
-            # 2) Reply with a `store_resp`.
-            var resp: store_resp;
-            resp.idem := already_present;
-            resp.src := self;
-            resp.tpl := msg.tpl;
-            unicast(resp, msg.src);
+		# 2 Reply with a `store_resp`.
+		var resp: store_resp;
+		resp.idem := already_present;
+		resp.src := self;
+		resp.tpl := msg.tpl;
+		unicast(resp, msg.src);
+	    }
         }
 
         implement store_resp.handle(msg: store_resp) {
-            debug "store_resp.handle" with self=self, msg=msg;
-            require inserting(self);
+	    if active {
+		debug "store_resp.handle" with self=self, msg=msg;
+		require inserting(self);
+		
+		acks.insert(msg.src);
 
-            acks.insert(msg.src);
+		if commit_reached {
+                    # Have we received a resp from all server_ids?  If so, commit.
+                    acks.erase(acks.begin(), acks.end());
 
-            if commit_reached {
-                # Have we received a resp from all server_ids?  If so, commit.
-                acks.erase(acks.begin(), acks.end());
-
-                insert_resp(msg.tpl);
-            }
+                    insert_resp(msg.tpl);
+		}
+	    }
         }
 
         # Tuple marking
 
         implement mark_req.handle(msg: mark_req) {
-            debug "mark_req.handle" with self=self, msg=msg;
-            # 1) Perform the local mark.
-            var ok := tuples.mark(msg.tpl, msg.src);
+	    if active {
+		debug "mark_req.handle" with self=self, msg=msg;
+		# 1 Perform the local mark.
+		var ok := tuples.mark(msg.tpl, msg.src);
 
-            # 2) Reply with a `mark_resp`.
-            var resp: mark_resp;
-            resp.src := self;
-            resp.tpl := msg.tpl;
-            resp.ok := ok;
-            unicast(resp, msg.src);
+		# 2 Reply with a `mark_resp`.
+		var resp: mark_resp;
+		resp.src := self;
+		resp.tpl := msg.tpl;
+		resp.ok := ok;
+		unicast(resp, msg.src);
+	    }
         }
 
         implement mark_resp.handle(msg: mark_resp) {
-            debug "mark_resp.handle" with self=self, msg=msg, rb=rolling_back;
-            if ~rolling_back {
+	    if active {
+		debug "mark_resp.handle" with self=self, msg=msg, rb=rolling_back;
+		if ~rolling_back {
 
-                # If the marking failed, we need to roll back server_ids.
-                if ~msg.ok {
-                    debug "rolling back mark" with self=self, tpl=msg.tpl;
-                    rolling_back := true;
-                    acks.erase(acks.begin(), acks.end());
+                    # If the marking failed, we need to roll back server_ids.
+                    if ~msg.ok {
+			debug "rolling back mark" with self=self, tpl=msg.tpl;
+			rolling_back := true;
+			acks.erase(acks.begin(), acks.end());
 
-                    var msg2 : undo_mark_req;
-                    msg2.src := self;
-                    msg2.tpl := msg.tpl;
+			var msg2 : undo_mark_req;
+			msg2.src := self;
+			msg2.tpl := msg.tpl;
 
-                    broadcast(msg2);
-                } else {
-                    # Have we received a successful resp from all server_ids?
-                    # If so, finish the first phase of the commit protocol
-                    # and then progress to the actual deletion.
-                    acks.insert(msg.src);
+			broadcast(msg2);
+                    } else {
+			# Have we received a successful resp from all server_ids?
+			# If so, finish the first phase of the commit protocol
+			# and then progress to the actual deletion.
+			acks.insert(msg.src);
 
-                    if commit_reached {
-                    #if ack_count = cast(server_id.max) + 1 {
-                        debug "Marking complete" with self=self, tpl=msg.tpl;
-                        acks.erase(acks.begin(), acks.end());
+			if commit_reached {
+			    #if ack_count = cast(server_id.max) + 1 
+                            debug "Marking complete" with self=self, tpl=msg.tpl;
+                            acks.erase(acks.begin(), acks.end());
 
-                        var msg2 : delete_req;
-                        msg2.src := self;
-                        msg2.tpl := msg.tpl;
-                        broadcast(msg2);
+                            var msg2 : delete_req;
+                            msg2.src := self;
+                            msg2.tpl := msg.tpl;
+                            broadcast(msg2);
+			}
                     }
-                }
-            }
+		}
+	    }
         }
 
         # Mark Rollback
 
         implement undo_mark_req.handle(msg: undo_mark_req) {
-            debug "undo_mark_req.handle" with self=self, msg=msg;
+	    if active {
+		debug "undo_mark_req.handle" with self=self, msg=msg;
 
-            # 1) Perform the local unmark.
-            var ok := tuples.unmark(msg.src, msg.tpl);
+		# 1 Perform the local unmark.
+		var ok := tuples.unmark(msg.src, msg.tpl);
 
-            # 2) Reply with a `undo_mark_resp`.
-            var resp: undo_mark_resp;
-            resp.src := self;
-            resp.tpl := msg.tpl;
-            resp.ok := ok;
-            unicast(resp, msg.src);
-        }
+		# 2 Reply with a `undo_mark_resp`.
+		var resp: undo_mark_resp;
+		resp.src := self;
+		resp.tpl := msg.tpl;
+		resp.ok := ok;
+		unicast(resp, msg.src);
+            }
+	}
 
         implement undo_mark_resp.handle(msg: undo_mark_resp) {
-            debug "undo_mark_resp.handle" with self=self, msg=msg;
+	    if active {
+		debug "undo_mark_resp.handle" with self=self, msg=msg;
 
-            if rolling_back {
-                acks.insert(msg.src);
+		if rolling_back {
+                    acks.insert(msg.src);
 
-                # Have all the server_ids responded back saying they've unmarked?
-                # If so, we can tell the client to retry.
-                if commit_reached {
-                    debug "Rollback complete" with self=self, tpl=msg.tpl;
-                    rolling_back := false;
-                    acks.erase(acks.begin(), acks.end());
+                    # Have all the server_ids responded back saying they've unmarked?
+                    # If so, we can tell the client to retry.
+                    if commit_reached {
+			debug "Rollback complete" with self=self, tpl=msg.tpl;
+			rolling_back := false;
+			acks.erase(acks.begin(), acks.end());
 
-                    remove_resp(option[tuple].empty);
-                }
+			remove_resp(option[tuple].empty);
+                    }
+		}
             }
+	}
+
+	# New View Handling
+
+	implement man_sock.recv(src:tcp.endpoint, msg:man_msg_t) {
+            msg.handle(self);
         }
+
+
+	implement view_msg.handle(msg: view_msg) {
+	    # no active check here as we want ALL servers to see views
+	    debug "view_msg.handle" with self=self, msg=msg;
+	    view_number := msg.view;
+
+	    var b := view.begin();
+	    var e := view.end();
+	    view.erase(b, e);
+
+	    # put current servers in view
+	    var in_view : bool := false;
+	    for it, sv in msg.cur_servers {
+		if sv = self {
+		    in_view := true;
+		}
+		view.insert(sv);
+	    }
+	    active := in_view;
+	    debug "active check" with server=self, active=active;
+	}
 
         # Tuple deletion
 
         implement delete_req.handle(msg: delete_req) {
-            debug "delete_req.handle" with self=self, msg=msg;
-            # 1) Perform the local delete, ensuring that we have marked the
-            # tuple for deletion.
-            var ok := tuples.sweep(msg.tpl, msg.src);
-            stored(self, msg.tpl) := false;
+	    if active {
+		debug "delete_req.handle" with self=self, msg=msg;
+		# 1 Perform the local delete, ensuring that we have marked the
+		# tuple for deletion.
+		var ok := tuples.sweep(msg.tpl, msg.src);
+		stored(self, msg.tpl) := false;
 
-            # 2) Reply with a `delete_resp`.
-            var resp: delete_resp;
-            resp.idem := false; # TODO
-            resp.src := self;
-            resp.tpl := msg.tpl;
-            unicast(resp, msg.src);
-        }
+		# 2 Reply with a `delete_resp`.
+		var resp: delete_resp;
+		resp.idem := false; # TODO
+		resp.src := self;
+		resp.tpl := msg.tpl;
+		unicast(resp, msg.src);
+            }
+	}
 
         implement delete_resp.handle(msg: delete_resp) {
-            debug "delete_resp.handle" with self=self, msg=msg;
+	    if active {
+		debug "delete_resp.handle" with self=self, msg=msg;
 
-            if ~rolling_back {
-                var it := server_id.iter.create(msg.src);
-                assert it ~= acks.end();
+		if ~rolling_back {
+                    var it := server_id.iter.create(msg.src);
+                    assert it ~= acks.end();
 
-                acks.insert(msg.src);
+                    acks.insert(msg.src);
 
-                # Have we received a successful resp from all server_ids?  If so, return
-                # the tuple to the client and unblock them.
-                if commit_reached {
-                    acks.erase(acks.begin(), acks.end());
+                    # Have we received a successful resp from all server_ids?  If so, return
+                    # the tuple to the client and unblock them.
+                    if commit_reached {
+			acks.erase(acks.begin(), acks.end());
 
-                    remove_resp(option[tuple].just(msg.tpl));
-                }
+			remove_resp(option[tuple].just(msg.tpl));
+                    }
+		}
             }
-        }
+	}
 
         # The commit point for inserts and removals is once we've heard back
         # from all servers in our view.  If we've reached the commit point,
         # then the set of nodes we've heard back from needs to be an improper
-        # superset of the current view.  (If no view changes have happened,
+        # superset of the current view.  If no view changes have happened,
         # then the sets will be equal. However, it is possible that dead nodes
-        # that we've gotten ACKs from might be removed from the view.)
+        # that we've gotten ACKs from might be removed from the view.
         action commit_reached returns (ret: bool) = {
             var vi := view.begin();
             var ve := view.end();
@@ -318,8 +369,10 @@ process server(self: server_id) = {
                 }
 
                 vi := view.next(vi);
-            }
-        }
+	    }
+	}
+
+	
 
     }
 
@@ -388,7 +441,7 @@ process server(self: server_id) = {
                 # remove -> insert), or it failed completely (serialising as
                 # insert -> remove).
                 require (server(N).active -> stored(N, ret)) |
-                        (server(N).active -> ~stored(N, ret));
+                (server(N).active -> ~stored(N, ret));
 
                 call unblock_client(self);
             }
@@ -405,8 +458,8 @@ process server(self: server_id) = {
                     # would be serialised second, and the rhs that the insert
                     # was.
                     require (server(N).active -> stored(N, ret.contents)) |
-                            (server(N).active -> ~stored(N, ret.contents));
-                    }
+                    (server(N).active -> ~stored(N, ret.contents));
+                }
 
                 call unblock_client(self);
             }

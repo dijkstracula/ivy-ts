@@ -3,6 +3,7 @@
 include network
 include numbers
 include utils
+include collections
 
 module server_rpc = {
     # All server messages are internal to the tuplespace implementation;
@@ -121,20 +122,15 @@ module server_rpc = {
 module manager_rpc = {
 
     class man_msg_t = {
-        action handle(self: manager_id, ^msg: man_msg_t)
+        action handle(self: server_id, ^msg: man_msg_t)
     }
 
-    subclass heartbeat_msg_t of man_msg_t = {
-        field src: server_id    # For heartbeats, where did this originate?
-        action handle(self: manager_id, ^msg: heartbeat_msg_t)
-    }
-
-    subclass view_msg_t of man_msg_t = {
+    subclass view_msg of man_msg_t = {
         field src: server_id
         field view : nat               # For view updates, the view number
         field cur_servers : vector[server_id] # For view updates, current servers in view
 
-        action handle(self: manager_id, ^msg: view_msg_t)
+        action handle(self: server_id, ^msg: view_msg)
     }
 
 }
