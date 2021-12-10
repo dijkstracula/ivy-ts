@@ -168,10 +168,13 @@ module tablet = {
                     tupleset.erase(it, tupleset.next(it));
                     tupleset.insert(to_be_marked);
                 }
+                # 2) a concurrent remover has already marked this server_id for removal.
+                # In either case, the caller needs to retry.
+            } else {
+                var ignored := add_tuple(tpl);
+                ok := mark(tpl, marker);
             }
 
-            # 2) a concurrent remover has already marked this server_id for removal.
-            # In either case, the caller needs to retry.
         }
 
         implement sweep {
