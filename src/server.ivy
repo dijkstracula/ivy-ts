@@ -52,7 +52,7 @@ process server(self: server_id) = {
     import action remove_resp(ret: option[tuple])
 
     import action park_commit
-    import action unpark_commit
+    import action node_unparked
 
     ##########################################################################
 
@@ -490,6 +490,8 @@ process server(self: server_id) = {
                 i := i + 1;
             }
 
+            server_state := live;
+
             var resp : replicate_resp;
             unicast(resp, msg.src);
         }
@@ -508,7 +510,7 @@ process server(self: server_id) = {
             debug "unpark.handle" with self=self;
             if parked_state = parked & msg.src = parker {
                 parked_state := unparked;
-                unpark_commit;
+                node_unparked;
             }
         }
 
@@ -726,5 +728,5 @@ attribute server.remove.weight = "0.33"
 
 # Topology changes should be very infrequent just so we spread the events out
 # through the test run.
-attribute server.join.weight = "0.1"
+attribute server.join.weight = "0.01"
 
