@@ -76,14 +76,12 @@ module manager_mod = {
 
             action announce(v:nat, new_servers:vector[server_id]) = {
                 debug "announce" with new_servers=new_servers;
-                proposed := false;
-                view := view.next;
-                var msg : view_msg;
-                msg.view := view;
-                msg.cur_servers := new_servers;
-
-                cur_servers := new_servers;
-                broadcast(msg);
+                if ~proposed {
+                    var msg : view_msg;
+                    msg.cur_servers := new_servers;
+                    paxos.server.propose(manager.opt_view_msg.just(msg));
+                    proposed := true;
+                }
             }
 
             implement paxos.server.decide(inst: paxos.instance_t, op: opt_view_msg) {
@@ -112,7 +110,7 @@ module manager_mod = {
                     joining := true;
                     var dst := cur_servers.get(0); # an "arbitrary" node to replicate over
 
-                    debug "join_msg_t.handle" with self=self, msg=msg, dst=dst;
+                debug "join_msg_t.handle" with self=self, msg=msg, dst=dst, nodes=cur_servers;
 
                     var m2 : bootstrap_msg_t;
                     m2.manager_src := self;
@@ -153,6 +151,6 @@ module manager_mod = {
 
     # Topology changes should be very infrequent just so we spread the events out
     # through the test run.
-    attribute manager.is_down.weight = "0.00"
+    attribute manager.is_down.weight = "0.01"
 }
 

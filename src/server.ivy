@@ -31,8 +31,8 @@ global {
     instantiate server_rpc
     instantiate manager_rpc
 
-    instance net : tcp.net(msg_t)
-    instance man_net : tcp.net(man_msg_t)
+    instance net : tcp_test.net(msg_t)
+    instance man_net : tcp_test.net(man_msg_t)
 }
 
 instantiate manager_mod
@@ -332,13 +332,11 @@ process server(self: server_id) = {
                     # Have all the server_ids responded back saying they've unmarked?
                     # If so, we can tell the client to retry.
                     if commit_reached {
-                        debug "Marking complete" with self=self, tpl=msg.tpl;
+                        debug "Unmarking complete" with self=self, tpl=msg.tpl;
                         acks.erase(acks.begin(), acks.end());
 
-                        var msg2 : delete_req;
-                        msg2.src := self;
-                        msg2.tpl := msg.tpl;
-                        broadcast(msg2);
+                        rolling_back := false;
+                        remove_resp(option[tuple].empty);
                     }
                 }
             }
@@ -486,7 +484,17 @@ process server(self: server_id) = {
 
         implement park_resp.handle(msg: park_resp) {
             debug "park_resp.handle" with self=self, parker=msg.src, inf=op_inflight;
+
             parked_acks.insert(msg.src);
+
+            var it := parked_acks.begin();
+            var e := parked_acks.end();
+            while it ~= e {
+                var v := it.value();
+                debug "parked_ack value" with v=v;
+                it := parked_acks.next(it);
+            }
+
 
             # Have all the server_ids responded back saying they've parked?
             # If so, we can tell the client to retry.
@@ -519,6 +527,11 @@ process server(self: server_id) = {
             var resp : replicate_resp;
             resp.new_server := self;
             unicast(resp, msg.src);
+
+            # we are implicitly parked, so 
+            var r2 : park_resp;
+            r2.src := self;
+            unicast(r2, msg.src);
         }
 
         implement replicate_resp.handle(msg: replicate_resp) {
@@ -534,7 +547,7 @@ process server(self: server_id) = {
 
         implement unpark.handle(msg: unpark) {
             debug "unpark.handle" with self=self;
-            if parked_state = parked & msg.src = parker {
+            if parked_state = parked {
                 parked_state := unparked;
                 node_unparked;
             }
@@ -567,6 +580,13 @@ process server(self: server_id) = {
             var vi := view.begin();
             var ve := view.end();
 
+            while vi ~= ve {
+                var val := vi.value();
+                debug "view value" with val=val;
+                vi := view.next(vi);
+            }
+
+            vi := view.begin();
             ret := true;
             while ret & vi ~= ve {
                 var val := vi.value();
@@ -755,5 +775,5 @@ attribute server.remove.weight = "0.33"
 
 # Topology changes should be very infrequent just so we spread the events out
 # through the test run.
-attribute server.join.weight = "0.00"
+attribute server.join.weight = "0.01"
 

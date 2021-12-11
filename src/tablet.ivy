@@ -243,6 +243,7 @@ module tablet = {
 
     specification {
         before sweep {
+            debug "before sweep" with self=self, tpl=tpl;
             # Nobody must have gotten in to sweep out the server_id before us.
             var key : row;
             key.contents := tpl;
