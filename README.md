@@ -12,7 +12,7 @@
 ```
 
 Tuplespaces in IVy, formally-verified to have
-[https://www.youtube.com/watch?v=4Q7FTjhvZ7Y&t=1098s](zarro boogs)
+[zarro boogs](https://www.youtube.com/watch?v=4Q7FTjhvZ7Y&t=1098s)
 
 ## Authors
 
